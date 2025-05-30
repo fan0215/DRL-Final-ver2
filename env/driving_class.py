@@ -3,14 +3,15 @@ from __future__ import annotations
 from abc import abstractmethod # For GoalEnv interface
 
 import numpy as np
-import gymnasium as gym 
+import gymnasium as gym
 from gymnasium import spaces
-from gymnasium.core import ObsType 
+from gymnasium.core import ObsType # REMOVED Action import
 from gymnasium import Env # For GoalEnv interface
+from typing import Any # For more general type hinting if needed
 
 from highway_env import utils
-from highway_env.envs.common.abstract import AbstractEnv 
-from highway_env.envs.common.observation import observation_factory, KinematicsGoalObservation, LidarObservation # Ensure LidarObservation is conceptually available
+from highway_env.envs.common.abstract import AbstractEnv
+from highway_env.envs.common.observation import observation_factory, KinematicsGoalObservation
 from highway_env.road.lane import LineType, StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.behavior import IDMVehicle
@@ -31,33 +32,24 @@ class GoalEnv(Env):
 
 class DrivingClassEnv(AbstractEnv, GoalEnv):
     """
-    Goal-conditioned Driving Class scenario with Lidar observation.
+    Goal-conditioned Driving Class scenario with Lidar observation and sequential goals.
     Agent uses Lidar for local perception and kinematic goals for task completion.
     """
-    # INTERNAL_KINEMATICS_CONFIG is used if main obs type is not KinematicsGoal,
-    # to ensure we can always get kinematic achieved/desired goals for reward.
-    # However, with KinematicsGoal as the main wrapper, this might be redundant
-    # if KinematicsGoal itself can provide these for internal calculations.
-    INTERNAL_KINEMATICS_CONFIG = {
-        "type": "KinematicsGoal", # This is a bit meta, usually it would be just "Kinematics"
-        "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"],
-        "goal_features": ["x", "y", "cos_h", "sin_h"], # Define how internal goals are structured
-        "scales": [100, 100, 10, 10, 1, 1], 
-        "goal_scales": [100, 100, 1, 1], 
-        "normalize": False,
-    }
+    MIN_LANE_LEN_FOR_EDGE_OBSTACLES = 0.5
 
     def __init__(self, config: dict = None, render_mode: str | None = None) -> None:
         self.goal_landmark: Landmark | None = None
-        super().__init__(config, render_mode) 
-        
+        self._lane_ids: list[tuple[str, str, int]] = []
+        self.goal_sequence: list[tuple[str, str, int]] = []
+        self.current_goal_index: int = 0
+        self.last_step_goal_met: bool = False
+        super().__init__(config, render_mode)
 
 
     @classmethod
     def default_config(cls) -> dict:
         config = super().default_config()
         config.update(
-
             {
                 "observation": {
                     "type": "TupleObservation",
@@ -74,378 +66,268 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                             "type": "KinematicsGoal",
                             "features": ["x", "y", "cos_h", "sin_h", "vx", "vy"], # Fallback/default for 'observation' field
                             "scales": [100, 100, 1, 1, 10, 10],
-                            "normalize": True# Normalization for the wrapper itself if it were to use its own kinematics for 'observation'
+                            "normalize": True # Normalization for the wrapper itself if it were to use its own kinematics for 'observation'
                         }
                     ],
                 },
                 "action": {
                     "type": "ContinuousAction", "longitudinal": True, "lateral": True,
-                    "acceleration_range": [-5, 5], "steering_range": [-np.pi / 3, np.pi / 3], 
+                    "acceleration_range": [-5, 5], "steering_range": [-np.pi / 3, np.pi / 3],
                 },
-                "simulation_frequency": 15, 
-                "policy_frequency": 5, 
-                "duration": 300,
-                "reward_weights": np.array([1.0, 1.0, 0.3, 0.3]), # For [x, y, cos_h, sin_h] goal features
-                "collision_reward": -150.0, 
-                "success_goal_reward": 0.15, # Used in _is_success: compute_reward_val > -this_value
-                "action_penalty_weight": -0.02, 
-                "on_road_shaping_reward": 0.005, 
+                "simulation_frequency": 15, "policy_frequency": 5,
+                "duration": 600,
+                "reward_weights": np.array([1.0, 1.0, 0.3, 0.3]),
+                "collision_reward": -150.0,
+                "action_penalty_weight": -0.02,
+                "on_road_shaping_reward": 0.005,
                 "lane_centering_shaping_reward": 0.005,
                 "lane_centering_cost_factor": 4,
-                "controlled_vehicles": 1, 
-                "other_vehicles": 0, 
-                "goal_lane_index_tuple": ("e", "f", 0), 
-                "goal_longitudinal_offset": 0.5, 
-                "goal_heading_noise_std": np.deg2rad(3), 
-                "goal_position_noise_std": 0.1, 
-                "success_distance_threshold": 0.75, # Adjusted physical threshold for success
-                "success_heading_threshold_rad": np.deg2rad(15), # Adjusted
-                "screen_width": 1200, 
-                "screen_height": 900,
-                "centering_position": [0.3, 0.6], "scaling": 3.5, 
-                "lane_width": 4.0, 
-                "show_trajectories": False, 
-                "offroad_terminal": True,
-                "x_offset": 0, 
-                "y_offset": 0,
+                "controlled_vehicles": 1, "other_vehicles": 0,
+                "goal_sequence": [("e", "f", 0), ("f", "g", 0) ],
+                "intermediate_goal_reward": 75.0,
+                "final_goal_completion_reward": 150.0,
+                "goal_longitudinal_offset": 0.5, "goal_heading_noise_std": np.deg2rad(3),
+                "goal_position_noise_std": 0.1, "success_distance_threshold": 0.03,
+                "success_heading_threshold_rad": np.deg2rad(15),
+                "screen_width": 1200, "screen_height": 900, "centering_position": [0.3, 0.6], "scaling": 3.5,
+                "lane_width": 4.0, "show_trajectories": False, "offroad_terminal": True,
+                "x_offset": 0, "y_offset": 0,
                 "road_segment_size": 80, "road_segment_gap": 8,
                 "road_extra_length": [10], "start_lane_index": 1,
-                # "manual_control": True,
-                # "real_time_rendering": True,
+                "manual_control": True,
+                "real_time_rendering": True,
 
-                # "add_lane_edge_obstacles": True,
-                # "lane_edge_obstacle_width": 0.1,
             }
         )
         return config
+
     def _set_destination(self) -> None:
-        """Sets or updates the goal landmark for the ego vehicle."""
-        if not self._lane_ids or self.vehicle is None: # Ensure road and vehicle exist
-            if self.goal_landmark and self.goal_landmark in self.road.objects:
-                self.road.objects.remove(self.goal_landmark)
-            self.goal_landmark = None
-            if self.vehicle:
-                self.vehicle.goal = None
-            return
-
-        goal_lane_id_tuple = self.config["goal_lane_index_tuple"]
-        # Fallback if configured goal_lane_id_tuple is not in the current road's _lane_ids
-        if goal_lane_id_tuple not in self._lane_ids:
-            goal_lane_id_tuple = self._lane_ids[-1] if self._lane_ids else None
-            if not goal_lane_id_tuple: # No lanes available at all
-                if self.goal_landmark and self.goal_landmark in self.road.objects:
-                    self.road.objects.remove(self.goal_landmark)
-                self.goal_landmark = None
-                if self.vehicle: self.vehicle.goal = None
-                return
-        try:
-            goal_lane_object = self.road.network.get_lane(goal_lane_id_tuple)
-            long_offset_factor = np.clip(self.config["goal_longitudinal_offset"], 0.05, 0.95)
-            goal_pos_on_lane = goal_lane_object.position(goal_lane_object.length * long_offset_factor, 0) # 0 lateral offset from lane center
-            goal_heading_on_lane = goal_lane_object.heading_at(goal_lane_object.length * long_offset_factor)
-
-            # Add noise to goal position and heading
-            goal_pos_on_lane[0] += self.np_random.normal(0, self.config["goal_position_noise_std"])
-            goal_pos_on_lane[1] += self.np_random.normal(0, self.config["goal_position_noise_std"])
-            goal_heading_on_lane += self.np_random.normal(0, self.config["goal_heading_noise_std"])
-
-            # Remove old landmark if it exists
-            if self.goal_landmark and self.goal_landmark in self.road.objects:
-                self.road.objects.remove(self.goal_landmark)
-
-            # Create and add new landmark
-            self.goal_landmark = Landmark(self.road, goal_pos_on_lane, heading=goal_heading_on_lane)
-            self.goal_landmark.color = VehicleGraphics.GREEN # Use a standard color
-            self.goal_landmark.length = self.config["lane_width"] * 0.7 # Visual size
-            self.goal_landmark.width = self.config["lane_width"] * 0.7  # Visual size
-            self.road.objects.append(self.goal_landmark)
-            if self.vehicle: # Assign to vehicle
-                self.vehicle.goal = self.goal_landmark
-        except KeyError: # If get_lane fails
-            if self.goal_landmark and self.goal_landmark in self.road.objects:
+        if not self.road or not self._lane_ids or self.vehicle is None:
+            if hasattr(self, 'goal_landmark') and self.goal_landmark and self.road and self.goal_landmark in self.road.objects:
                 self.road.objects.remove(self.goal_landmark)
             self.goal_landmark = None
             if self.vehicle: self.vehicle.goal = None
+            return
 
+        if self.goal_landmark and self.road and self.goal_landmark in self.road.objects:
+            self.road.objects.remove(self.goal_landmark)
+        self.goal_landmark = None
+        if self.vehicle: self.vehicle.goal = None
+
+        if self.current_goal_index >= len(self.goal_sequence): return
+
+        current_goal_config_tuple = self.goal_sequence[self.current_goal_index]
+        if current_goal_config_tuple not in self._lane_ids: return
+
+        try:
+            goal_lane_object = self.road.network.get_lane(current_goal_config_tuple)
+            long_offset_factor = np.clip(self.config["goal_longitudinal_offset"], 0.05, 0.95)
+            goal_pos = goal_lane_object.position(goal_lane_object.length * long_offset_factor, 0)
+            print("Testttt!!!")
+            print(goal_lane_object.length * long_offset_factor)
+            goal_head = goal_lane_object.heading_at(goal_lane_object.length * long_offset_factor)
+            goal_pos[0] += self.np_random.normal(0, self.config["goal_position_noise_std"])
+            goal_pos[1] += self.np_random.normal(0, self.config["goal_position_noise_std"])
+            goal_head += self.np_random.normal(0, self.config["goal_heading_noise_std"])
+
+            self.goal_landmark = Landmark(self.road, goal_pos, heading=goal_head)
+            self.goal_landmark.color=VehicleGraphics.GREEN
+            self.goal_landmark.length=self.config["lane_width"] * 0.7
+            self.goal_landmark.width=self.config["lane_width"] * 0.7
+            if self.road: self.road.objects.append(self.goal_landmark)
+            if self.vehicle: self.vehicle.goal = self.goal_landmark
+        except KeyError:
+            if self.vehicle: self.vehicle.goal = None
 
     def compute_reward(self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict, p: float = 0.5) -> float:
-        """
-        Computes the reward based on the distance to the goal.
-        The distance is a weighted L_p norm, p=0.5 means sum of sqrt of weighted errors.
-        """
+        if desired_goal is None: return 0.0
         current_reward_weights = np.array(self.config["reward_weights"])
-        # Ensure achieved_goal and desired_goal match the length of reward_weights
-        # (which should correspond to 'goal_features')
         if len(current_reward_weights) != len(achieved_goal) or len(current_reward_weights) != len(desired_goal):
-            # Fallback to unweighted norm if there's a mismatch. This indicates a config issue.
-            # print(f"Warning: Mismatch in reward_weights length. Achieved: {len(achieved_goal)}, Desired: {len(desired_goal)}, Weights: {len(current_reward_weights)}")
-            return -np.power(np.linalg.norm(achieved_goal - desired_goal, ord=p), p) # Note: np.linalg.norm doesn't take axis for 1D arrays
-
-        # Element-wise difference, weighted, then L_p norm
-        # For p=0.5, this is -sum(sqrt(weights * |achieved - desired|))
-        # The formula used in the original code was: -np.power(np.dot(np.abs(achieved_goal - desired_goal), current_reward_weights), p)
-        # This is equivalent to -( (w1*|a1-d1|) + (w2*|a2-d2|) + ... )^p
-        # This is a valid way to compute a weighted distance.
+            return -np.power(np.linalg.norm(achieved_goal - desired_goal), p)
         weighted_abs_diff = np.dot(np.abs(achieved_goal - desired_goal), current_reward_weights)
         return -np.power(weighted_abs_diff, p)
 
+    def _reward(self, action: np.ndarray) -> float: # Changed Action to np.ndarray
+        if self.observation_type is None or self.vehicle is None: return 0.0
 
-    def _reward(self, action: np.ndarray) -> float:
-        """Computes the total reward for the current step."""
-        # The observation_type is TupleObservation, its observe() method returns a tuple.
-        # Element 0: LidarScan, Element 1: KinematicsGoalDict
-        full_obs_tuple = self.observation_type.observe()
-        kinematics_data_dict = full_obs_tuple[1] # This is the dict from KinematicsGoalObservation
+        obs_tuple_for_current_goal_eval = self.observation_type.observe()
+        kinematics_data_dict = obs_tuple_for_current_goal_eval[1]
+        achieved_g = kinematics_data_dict["achieved_goal"]
+        desired_g_this_step = kinematics_data_dict["desired_goal"]
 
-        achieved_goal = kinematics_data_dict["achieved_goal"]
-        desired_goal = kinematics_data_dict["desired_goal"]
+        total_reward = 0.0
+        self.last_step_goal_met = False
 
-        is_success_flag = self._is_success(achieved_goal, desired_goal)
-        info_for_compute_reward = { # Info dict for the compute_reward method
-            "is_crashed": self.vehicle.crashed if self.vehicle else True,
-            "is_success": is_success_flag,
-        }
-        goal_based_reward = self.compute_reward(achieved_goal, desired_goal, info_for_compute_reward) # p defaults to 0.5
-        total_reward = goal_based_reward
+        if desired_g_this_step is not None and self.current_goal_index < len(self.goal_sequence):
+            self.last_step_goal_met = self._is_success(achieved_g, desired_g_this_step)
+            info_for_compute = {"is_crashed": self.vehicle.crashed, "is_success": self.last_step_goal_met}
+            total_reward += self.compute_reward(achieved_g, desired_g_this_step, info_for_compute)
 
-        # Collision penalty
-        if self.vehicle and self.vehicle.crashed:
+            if self.last_step_goal_met:
+                is_this_the_final_goal_in_sequence = (self.current_goal_index == len(self.goal_sequence) - 1)
+                if is_this_the_final_goal_in_sequence:
+                    total_reward += self.config.get("final_goal_completion_reward", self.config["intermediate_goal_reward"])
+                else:
+                    total_reward += self.config["intermediate_goal_reward"]
+                self.current_goal_index += 1
+                self._set_destination()
+        
+        if self.vehicle.crashed:
             total_reward += self.config["collision_reward"]
-
-        # Action penalty
-        action_penalty = self.config["action_penalty_weight"] * np.linalg.norm(action)
-        total_reward += action_penalty
-
-        # Shaping rewards if vehicle exists
-        if self.vehicle:
-            # On-road shaping reward
-            on_road_value = float(self.vehicle.on_road)
-            total_reward += self.config["on_road_shaping_reward"] * on_road_value
-
-            # Lane centering shaping reward
-            lane_centering_value = 0.0
-            if self.vehicle.on_road and self.vehicle.lane_index: # Ensure vehicle is on a valid lane
-                try:
-                    current_lane = self.road.network.get_lane(self.vehicle.lane_index)
-                    _, lateral_offset = current_lane.local_coordinates(self.vehicle.position)
-                    # Reward for being centered, decreases with offset
-                    lane_centering_value = 1 / (1 + self.config["lane_centering_cost_factor"] * lateral_offset**2)
-                except KeyError: # Should not happen if lane_index is valid
-                    pass
-            total_reward += self.config["lane_centering_shaping_reward"] * lane_centering_value
+        total_reward += self.config["action_penalty_weight"] * np.linalg.norm(action)
+        on_road_value = float(self.vehicle.on_road)
+        total_reward += self.config["on_road_shaping_reward"] * on_road_value
+        
+        lane_centering_value = 0.0
+        if self.vehicle.on_road and self.vehicle.lane_index and self.road:
+            try:
+                current_lane = self.road.network.get_lane(self.vehicle.lane_index)
+                _, lateral_offset = current_lane.local_coordinates(self.vehicle.position)
+                lane_centering_value = 1 / (1 + self.config["lane_centering_cost_factor"] * lateral_offset**2)
+            except (KeyError, AttributeError): pass
+        total_reward += self.config["lane_centering_shaping_reward"] * lane_centering_value
+        
         return float(total_reward)
 
     def _is_success(self, achieved_goal: np.ndarray, desired_goal: np.ndarray) -> bool:
-        """Checks if the agent has successfully reached the goal based on physical thresholds."""
-        # Position check (first two elements of goals are x, y)
+        if desired_goal is None: return False
         dist_sq = np.sum(np.square(achieved_goal[0:2] - desired_goal[0:2]))
         position_ok = dist_sq < self.config["success_distance_threshold"]**2
-
-        # Heading check (elements 2 and 3 are cos_h, sin_h)
-        # Ensure goals have heading components
         if len(achieved_goal) >= 4 and len(desired_goal) >= 4:
-            # Dot product of heading vectors (achieved_goal[2:4] and desired_goal[2:4]) gives cos(delta_angle)
             cos_delta_angle = np.clip(np.dot(achieved_goal[2:4], desired_goal[2:4]), -1.0, 1.0)
-            # Success if delta_angle is within threshold
             heading_ok = cos_delta_angle >= np.cos(self.config["success_heading_threshold_rad"])
-        else: # If goal_features doesn't include heading, consider heading always OK for success
-            heading_ok = True
-            # print("Warning: Heading components not found in achieved/desired goal for success check.")
-
+        else: heading_ok = True
         return bool(position_ok and heading_ok)
 
     def _is_terminated(self) -> bool:
-        """Checks if the episode should terminate."""
-        crashed = self.vehicle.crashed if self.vehicle else True # Terminate on crash
-        off_road = self.config["offroad_terminal"] and (self.vehicle and not self.vehicle.on_road) # Terminate if off-road
-
-        # Terminate on success
-        full_obs_tuple = self.observation_type.observe()
-        kinematics_data_dict = full_obs_tuple[1]
-        achieved_goal = kinematics_data_dict["achieved_goal"]
-        desired_goal = kinematics_data_dict["desired_goal"]
-        success = self._is_success(achieved_goal, desired_goal)
-
-        return bool(crashed or success or off_road)
+        if self.vehicle is None: return True
+        crashed = self.vehicle.crashed
+        off_road = self.config["offroad_terminal"] and not self.vehicle.on_road
+        all_goals_completed = self.current_goal_index >= len(self.goal_sequence)
+        return bool(crashed or off_road or all_goals_completed)
 
     def _is_truncated(self) -> bool:
-        """Checks if the episode should be truncated (e.g., time limit)."""
         return self.time >= self.config["duration"]
 
     def _reset(self) -> tuple[ObsType, dict]:
-        """Resets the environment to an initial state."""
-        self.time = 0
-        self.terminated = False
-        self.truncated = False
-        self._create_road() # Create road layout
-        self._make_walls()
-        self._make_vehicles() # Create and place vehicles
-        self._set_destination() # Set the goal for the ego vehicle
+        self.time = 0; self.terminated = False; self.truncated = False
+        self.last_step_goal_met = False
+        self.goal_sequence = list(self.config.get("goal_sequence", []))
+        self.current_goal_index = 0
 
-        # Set initial target speed if longitudinal control is off (as per original logic)
+        self._create_road(); self._make_vehicles(); self._make_walls()
+        self._set_destination()
+
         action_config = self.config["action"]
-        if self.vehicle and action_config.get("longitudinal", True) is False and hasattr(self.vehicle, 'target_speed'):
+        if self.vehicle and not action_config.get("longitudinal", True) and hasattr(self.vehicle, 'target_speed'):
             target_speeds = action_config.get("target_speeds")
             if target_speeds and len(target_speeds) > 0:
                 self.vehicle.target_speed = target_speeds[len(target_speeds) // 2]
 
-        # Get the initial observation (tuple of LidarScan, KinematicsGoalDict)
         current_observation_tuple = self.observation_type.observe()
-        # Generate dummy action for initial info dict (some info fields might depend on action)
-        dummy_action = self.action_space.sample()
+        dummy_action = self.action_space.sample() # type: ignore
         info = self._info(current_observation_tuple, dummy_action)
+        return current_observation_tuple, info
 
-        return current_observation_tuple, info # Return the tuple observation and info dict
-
-    def _info(self, obs_tuple: tuple, action: np.ndarray | list) -> dict:
-        """Generates an info dictionary for the current step."""
-        # obs_tuple is (LidarScan, KinematicsGoalDict)
-        kinematics_data_dict = obs_tuple[1]
-        achieved_goal = kinematics_data_dict["achieved_goal"]
-        desired_goal = kinematics_data_dict["desired_goal"]
-        is_success_flag = self._is_success(achieved_goal, desired_goal)
-
-        info_dict = {"is_success": is_success_flag}
+    def _info(self, obs: ObsType, action: np.ndarray | list) -> dict: # Changed Action to np.ndarray | list
+        kinematics_data_dict = obs[1]
+        info_dict = {
+            "last_goal_attempt_success": self.last_step_goal_met,
+            "current_target_goal_index": self.current_goal_index,
+            "total_goals_in_sequence": len(self.goal_sequence),
+            "all_goals_completed": self.current_goal_index >= len(self.goal_sequence)
+        }
         if self.vehicle:
             info_dict.update({
-                "speed": self.vehicle.speed,
-                "crashed": self.vehicle.crashed,
+                "speed": self.vehicle.speed, "crashed": self.vehicle.crashed,
                 "on_road": self.vehicle.on_road,
-                "action": action.tolist() if isinstance(action, np.ndarray) else action, # Store action taken
-                # "raw_lidar_sum": np.sum(obs_tuple[0]), # Example: add some Lidar summary
+                "action": action.tolist() if isinstance(action, np.ndarray) else action,
             })
         return info_dict
 
+    def step(self, action: np.ndarray) -> tuple[ObsType, float, bool, bool, dict]: # Changed Action to np.ndarray
+        self.time += 1
+        self._simulate(action)
+        reward = self._reward(action)
+        terminated = self._is_terminated()
+        truncated = self._is_truncated()
+        obs_for_next_step = self.observation_type.observe()
+        info = self._info(obs_for_next_step, action)
+        return obs_for_next_step, reward, terminated, truncated, info
+
     def _create_road(self) -> None:
-        """Creates the road network for the environment."""
         net = RoadNetwork()
         width = self.config["lane_width"]
         c, s, n = LineType.CONTINUOUS, LineType.STRIPED, LineType.NONE
-        # Define line types for lanes: e.g., [LeftLine, RightLine]
-        # line_type_defs[0] could be solid lines, line_type_defs[1] could be dashed/solid etc.
-        line_type_defs = [
-            [LineType.CONTINUOUS, LineType.CONTINUOUS], # Both solid
-            [LineType.STRIPED, LineType.CONTINUOUS]     # Left striped, Right solid
-        ]
-        x_offset = self.config["x_offset"]
-        y_offset = self.config["y_offset"]
-        size = self.config["road_segment_size"]
-        gap = self.config["road_segment_gap"]
-        # Ensure 'length' is treated as a list, typically with one element for specific segments.
+        line_type_defs = [[LineType.CONTINUOUS, LineType.CONTINUOUS], [LineType.STRIPED, LineType.CONTINUOUS]]
+        x_offset = self.config["x_offset"]; y_offset = self.config["y_offset"]
+        size = self.config["road_segment_size"]; gap = self.config["road_segment_gap"]
         extra_len_val = self.config["road_extra_length"][0] if self.config["road_extra_length"] else 10
-
-        self._lane_ids = [] # Reset lane IDs for the new road
-
-        # Segment 1: (a -> b) Vertical
+        self._lane_ids = []
         net.add_lane("a","b", StraightLane(
-                [x_offset + width, y_offset + width * 2], # Start point
-                [x_offset + width, y_offset + width * 2 + size], # End point
+                [x_offset + width, y_offset + width * 2], [x_offset + width, y_offset + width * 2 + size],
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("a", "b", 0))
-
-        # Segment 2: (b -> c) Horizontal with various parts
-        net.add_lane("b","c",StraightLane( # Part 1
-                [x_offset + width * 2, y_offset + width * 3 + size],
-                [x_offset + width * 2 + gap, y_offset + width * 3 + size],
+        net.add_lane("b","c",StraightLane(
+                [x_offset + width * 2, y_offset + width * 3 + size], [x_offset + width * 2 + gap, y_offset + width * 3 + size],
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("b", "c", 0))
-        net.add_lane("b","c",StraightLane( # Part 2 (wider)
+        net.add_lane("b","c",StraightLane(
                 [x_offset + width * 2 + gap, y_offset + width * 2 + size + width * 2 - (width * 2 + extra_len_val) / 2],
                 [x_offset + width * 2 + gap + width * 2, y_offset + width * 2 + size + width * 2 - (width * 2 + extra_len_val) / 2],
                 width=width * 2 + extra_len_val, line_types=line_type_defs[0]))
         self._lane_ids.append(("b", "c", 1))
-        net.add_lane("b","c",StraightLane( # Part 3
+        net.add_lane("b","c",StraightLane(
                 [x_offset + width * 2 + gap + width * 2, y_offset + width * 3 + size],
                 [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 3 + size],
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("b", "c", 2))
-        net.add_lane("b","c",StraightLane( # Part 4 (wider)
+        net.add_lane("b","c",StraightLane(
                 [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 2 + size],
                 [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val, y_offset + width * 2 + size],
                 width=width * 4, line_types=line_type_defs[0]))
         self._lane_ids.append(("b", "c", 3))
-        net.add_lane("b","c",StraightLane( # Part 5
+        net.add_lane("b","c",StraightLane(
                 [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val, y_offset + width * 3 + size],
                 [x_offset + width * 2 + size, y_offset + width * 3 + size],
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("b", "c", 4))
-
-        # Segment 3: (c -> d) Vertical
         net.add_lane("c","d",StraightLane(
-                [x_offset + width * 3 + size, y_offset + width * 2 + size],
-                [x_offset + width * 3 + size, y_offset + width * 2],
+                [x_offset + width * 3 + size, y_offset + width * 2 + size], [x_offset + width * 3 + size, y_offset + width * 2],
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("c", "d", 0))
-
-        # Segment 4: (d -> e) Horizontal
         net.add_lane("d","e",StraightLane(
-                [x_offset + width * 2 + size, y_offset + width],
-                [x_offset + width * 2, y_offset + width],
+                [x_offset + width * 2 + size, y_offset + width], [x_offset + width * 2, y_offset + width],
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("d", "e", 0))
-
-        # Segment 5: (e -> f) "Reversing Bay" - 倒車 (This is the default goal lane)
         net.add_lane("e","f",StraightLane(
-                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size - extra_len_val], # End (shorter)
-                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size], # Start
+                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size - extra_len_val],
+                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size],
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("e", "f", 0))
-
-        # Segment 6: (f -> g) "Roadside Parking" - 路邊停車
         net.add_lane("f","g",StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val / 2, y_offset + width * 2 + size], # Top center
-                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val / 2, y_offset + width * 2 + size - width * 2], # Bottom center
-                width=extra_len_val, line_types=line_type_defs[0])) # Width of spot is extra_len_val
+                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val / 2, y_offset + width * 2 + size],
+                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val / 2, y_offset + width * 2 + size - width * 2],
+                width=extra_len_val, line_types=line_type_defs[0]))
         self._lane_ids.append(("f", "g", 0))
-
-        # Segment 7: (g -> h) "Corner" sections (very wide lanes, might be open areas)
-        net.add_lane("g","h",StraightLane( # Horizontal part 1
-                [x_offset, y_offset + width * 2 + size / 2],
-                [x_offset + width * 2, y_offset + width * 2 + size / 2],
+        net.add_lane("g","h",StraightLane(
+                [x_offset, y_offset + width * 2 + size / 2], [x_offset + width * 2, y_offset + width * 2 + size / 2],
                 width=width * 4 + size, line_types=line_type_defs[0]))
         self._lane_ids.append(("g", "h", 0))
-        net.add_lane("g","h",StraightLane( # Horizontal part 2
-                [x_offset + width * 2 + size, y_offset + width * 2 + size / 2],
-                [x_offset + width * 4 + size, y_offset + width * 2 + size / 2],
+        net.add_lane("g","h",StraightLane(
+                [x_offset + width * 2 + size, y_offset + width * 2 + size / 2], [x_offset + width * 4 + size, y_offset + width * 2 + size / 2],
                 width=width * 4 + size, line_types=line_type_defs[0]))
         self._lane_ids.append(("g", "h", 1))
-        net.add_lane("g","h",StraightLane( # Vertical part 1
-                [x_offset + width * 2 + size / 2, y_offset],
-                [x_offset + width * 2 + size / 2, y_offset + width * 2],
+        net.add_lane("g","h",StraightLane(
+                [x_offset + width * 2 + size / 2, y_offset], [x_offset + width * 2 + size / 2, y_offset + width * 2],
                 width=width * 4 + size, line_types=line_type_defs[0]))
         self._lane_ids.append(("g", "h", 2))
-        net.add_lane("g","h",StraightLane( # Vertical part 2
-                [x_offset + width * 2 + size / 2, y_offset + width * 2 + size],
-                [x_offset + width * 2 + size / 2, y_offset + width * 4 + size],
+        net.add_lane("g","h",StraightLane(
+                [x_offset + width * 2 + size / 2, y_offset + width * 2 + size], [x_offset + width * 2 + size / 2, y_offset + width * 4 + size],
                 width=width * 4 + size, line_types=line_type_defs[0]))
         self._lane_ids.append(("g", "h", 3))
-
-
         self.road = Road(network=net, np_random=self.np_random, record_history=self.config.get("show_trajectories", False))
-        # # Ensure road.objects list exists for adding landmarks or obstacles
-        # if not hasattr(self.road, 'objects') or self.road.objects is None: 
-        #     self.road.objects = []
-        # if self.config.get("add_lane_edge_obstacles", False):
-        #     obstacle_width = self.config["lane_edge_obstacle_width"]
-        #     for lane_id in self._lane_ids: 
-        #         try:
-        #             lane = self.road.network.get_lane(lane_id)
-        #             if isinstance(lane, StraightLane):
-        #                 lane_len = lane.length
-        #                 if lane_len <= 1e-6: continue
-        #                 direction = lane.end - lane.start; norm_val = np.linalg.norm(direction)
-        #                 if norm_val < 1e-6: continue 
-        #                 left_edge_center = lane.position(lane_len / 2, -lane.width / 2) 
-        #                 obs_left = Obstacle(self.road, left_edge_center, heading=lane.heading_at(lane_len/2)) 
-        #                 obs_left.LENGTH = lane_len; obs_left.WIDTH = obstacle_width
-        #                 obs_left.HITBOX_LENGTH = lane_len; obs_left.HITBOX_WIDTH = obstacle_width
-        #                 self.road.objects.append(obs_left)
-        #                 right_edge_center = lane.position(lane_len / 2, lane.width / 2) 
-        #                 obs_right = Obstacle(self.road, right_edge_center, heading=lane.heading_at(lane_len/2)) 
-        #                 obs_right.LENGTH = lane_len; obs_right.WIDTH = obstacle_width
-        #                 obs_right.HITBOX_LENGTH = lane_len; obs_right.HITBOX_WIDTH = obstacle_width
-        #                 self.road.objects.append(obs_right)
-        #         except KeyError: pass
+        if not hasattr(self.road, 'objects') or self.road.objects is None: self.road.objects = []
 
     def _make_walls(self) -> None:
         size = self.config["road_segment_size"]
@@ -501,69 +383,58 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         self.vehicle = controlled_vehicle; self.vehicle.goal = None
 
 
-# --- Registration and Test Script ---
-register(
-    id="DrivingClass-v0", # Standard name for this version
-    entry_point=f"{__name__}:DrivingClassEnv", # Entry point: this_file_name:ClassName
-)
+
+register(id="DrivingClass-v0", entry_point=f"{__name__}:DrivingClassEnv")
 
 if __name__ == "__main__":
-    # Test the environment
     env = gym.make("DrivingClass-v0", render_mode="human")
-
-
-    print(f"--- {env.spec.id if env.spec else 'DrivingClass-v0'} (Tuple Lidar + Goal) Test ---")
+    print(f"--- {env.spec.id if env.spec else 'DrivingClass-v0'} Test ---")
     print(f"Observation space: {env.observation_space}")
-    # Detailed breakdown of TupleObservation space
     if isinstance(env.observation_space, spaces.Tuple):
-        print(f"  Lidar observation part space (index 0): {env.observation_space.spaces[0]}")
-        print(f"  KinematicsGoal observation part space (index 1): {env.observation_space.spaces[1]}")
+        print(f"  Lidar space (idx 0) shape: {env.observation_space.spaces[0].shape}")
         if isinstance(env.observation_space.spaces[1], spaces.Dict):
             kgo_space = env.observation_space.spaces[1]
-            print(f"    Achieved goal space: {kgo_space['achieved_goal']}")
-            print(f"    Desired goal space: {kgo_space['desired_goal']}")
-            print(f"    Ego kinematics ('observation' key) space: {kgo_space['observation']}")
-
+            print(f"  KinematicsGoal space (idx 1):")
+            for key, space_item in kgo_space.spaces.items():
+                 print(f"    {key}: {space_item.shape}")
     print(f"Action space: {env.action_space}")
-
-    num_episodes = 1000 # Number of episodes to run for testing
+    num_episodes = 1000
     for episode in range(num_episodes):
         print(f"\n--- Episode {episode + 1}/{num_episodes} ---")
-        # obs_tuple is (LidarScan_ndarray, KinematicsGoal_dict)
         obs_tuple, info = env.reset()
-
-        # Access desired_goal from the KinematicsGoal_dict part of the tuple
+        print(f"Initial Info: {info}")
         kinematics_data_dict_reset = obs_tuple[1]
         if kinematics_data_dict_reset.get("desired_goal") is not None:
             goal_str = [f"{c:.2f}" for c in kinematics_data_dict_reset['desired_goal']]
-            print(f"Desired Goal (x,y,cosH,sinH): {goal_str}")
-
-        terminated = False
-        truncated = False
-        total_reward_ep = 0.0
-        step_count = 0
+            print(f"Initial Desired Goal (target_idx {info.get('current_target_goal_index',0)}): {goal_str}")
+        terminated = False; truncated = False
+        total_reward_ep = 0.0; step_count = 0
         while not (terminated or truncated):
-            action = env.action_space.sample() # Sample a random action
-            obs_tuple, reward_val, terminated, truncated, info = env.step(action)
-            total_reward_ep += reward_val
-            step_count += 1
-
-            # Access Lidar data and kinematics data from the observation tuple
+            action = env.action_space.sample() # type: ignore
+            obs_tuple, reward_val, terminated, truncated, current_info = env.step(action)
+            total_reward_ep += reward_val; step_count += 1
             lidar_data = obs_tuple[0]
             kinematics_data_dict_step = obs_tuple[1]
-
             act_str = [f"{a:.2f}" for a in action] if isinstance(action, np.ndarray) else str(action)
-            # Print info periodically or at the end of an episode segment
-            if (step_count) % 20 == 0 or terminated or truncated :
-                print(f"  St {step_count:3d}, Act: {act_str}, Rew: {reward_val:7.3f}, Lidar Sum: {np.sum(lidar_data):6.2f}, Succ: {info.get('is_success', False)}")
-
-            env.render() # Render the environment (if in "human" mode)
-
+            if current_info.get("last_goal_attempt_success", False):
+                achieved_goal_idx = current_info.get('current_target_goal_index', 1) -1
+                print(f"  >>> Intermediate Goal (idx {achieved_goal_idx}) Reached at step {step_count}! <<<")
+                if kinematics_data_dict_step.get("desired_goal") is not None:
+                     next_goal_str = [f"{c:.2f}" for c in kinematics_data_dict_step['desired_goal']]
+                     print(f"      New Desired Goal (target_idx {current_info.get('current_target_goal_index')}): {next_goal_str}")
+                elif current_info.get('all_goals_completed', False):
+                     print(f"      All goals in sequence completed!")
+            if (step_count) % 30 == 0 or terminated or truncated:
+                print(f"  St {step_count:3d}, Act: {act_str}, Rew: {reward_val:7.3f}, "
+                      f"Lidar Sum: {np.sum(lidar_data):6.2f}, LastGoalOK: {current_info.get('last_goal_attempt_success', False)}, "
+                      f"TargetIdx: {current_info.get('current_target_goal_index', 0)}")
+            env.render()
             if terminated:
-                print(f"Terminated after {step_count} steps. Success: {info.get('is_success', False)}")
-            if truncated:
-                print(f"Truncated after {step_count} steps. Success: {info.get('is_success', False)}") # Should also check success on truncation
-
-        print(f"Episode {episode + 1} finished. Total Reward: {total_reward_ep:.2f}, Total Steps: {step_count}")
+                all_done_flag = current_info.get('all_goals_completed', False)
+                crashed_flag = not hasattr(env, "vehicle")
+                print(f"Terminated. Overall Success (all goals met & not crashed): {all_done_flag and not crashed_flag}. Steps {step_count}.")
+            if truncated: print(f"Truncated. Steps {step_count}.")
+        print(f"Ep {episode + 1} end. TotRew: {total_reward_ep:.2f}, Steps: {step_count}")
     env.close()
     print("\n--- Test Finished ---")
+

@@ -123,7 +123,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "show_trajectories": False, "offroad_terminal": True,
                 "x_offset": 10, "y_offset": 10,
                 "road_segment_size": 75, "road_segment_gap": 8,
-                "road_extra_length": [10], "start_lane_index": 0,
+                "road_extra_length": [10], "start_lane_index": 1,
             }
         )
         return config

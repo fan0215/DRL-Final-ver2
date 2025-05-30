@@ -19,17 +19,7 @@ from highway_env.vehicle.objects import Landmark, Obstacle
 from highway_env.vehicle.graphics import VehicleGraphics
 from gymnasium.envs.registration import register
 
-# User-provided GoalEnv interface
-class GoalEnv(Env):
-    """ Interface for A goal-based environment. (Docstring from user) """
-    @abstractmethod
-    def compute_reward(
-        self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict
-    ) -> float:
-        """Compute the step reward. (Docstring from user)"""
-        raise NotImplementedError
-
-class DrivingClassEnv(AbstractEnv, GoalEnv):
+class DrivingClassEnv(AbstractEnv):
     """
     Goal-conditioned Driving Class scenario with Lidar observation.
     Agent uses Lidar for local perception and kinematic goals for task completion.
@@ -72,34 +62,19 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         config.update(
             {
                 "observation": {
-                    "type": "KinematicsGoal",  # Top-level wrapper for GoalEnv structure
-                    
-                    # Config for the 'achieved_goal' and 'desired_goal' parts
-                    "goal_features": ["x", "y", "cos_h", "sin_h"], 
-                    "goal_scales": [100, 100, 1, 1], # Scales for goal features
-                    "normalize_goal": False, # Whether to normalize achieved/desired goals
-
                     # Config for the 'observation' part of the KinematicsGoal dict: Lidar
-                    "observation_config": {
-                        "type": "OccupancyGrid",
-                        "features": [ "on_road" ],
-                        "grid_size": [[-50, 50]],
-                        "grid_step": [3, 3],
-                        "as_image": False,
-                        "align_to_vehicle_axes": True,
-                    },
-                    
-                    # These are for the KinematicsGoal wrapper itself, 
-                    # defining its default base observation IF observation_config was not given.
-                    # Since observation_config IS given, these 'features' and 'scales'
-                    # for the base 'observation' part are effectively overridden by Lidar.
-                    "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"], # Fallback/default for 'observation' field
-                    "scales": [100, 100, 10, 10, 1, 1],
-                    "normalize": False # Normalization for the wrapper itself if it were to use its own kinematics for 'observation'
+                    "type": "LidarObservation",
+                    "angle_range": [-np.pi, np.pi], # Full 360-degree Lidar
+                    "cells": 50,                     # Number of Lidar beams
+                    "max_distance": 30.0,            # Max Lidar distance (meters)
+                    "normalize": True,               # Normalize Lidar distances to [0, 1]
+                    "see_behind": True,              # Allow Lidar to see behind
+                    "gaussian_noise": 0.01,        # Optional: add noise (proportion of max_distance)
+                    "show_rays": True,
                 },
                 "action": {
                     "type": "ContinuousAction", "longitudinal": True, "lateral": True,
-                    "acceleration_range": [-2, 3.5], "steering_range": [-np.pi / 3, np.pi / 3], 
+                    "acceleration_range": [-3.5, 3.5], "steering_range": [-np.pi / 3, np.pi / 3], 
                 },
                 "simulation_frequency": 15, "policy_frequency": 5, "duration": 300,
                 "reward_weights": np.array([1.0, 1.0, 0.3, 0.3]), # For [x, y, cos_h, sin_h] goal features
@@ -109,8 +84,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "on_road_shaping_reward": 0.005, 
                 "lane_centering_shaping_reward": 0.005,
                 "lane_centering_cost_factor": 4,
-                "controlled_vehicles": 1, 
-                "other_vehicles": 0, 
+                "controlled_vehicles": 1, "other_vehicles": 0, 
                 "goal_lane_index_tuple": ("e", "f", 0), 
                 "goal_longitudinal_offset": 0.5, 
                 "goal_heading_noise_std": np.deg2rad(3), 
@@ -120,11 +94,11 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "screen_width": 1200, "screen_height": 900,
                 "centering_position": [0.3, 0.6], "scaling": 3.5, 
                 "lane_width": 4.0, 
-                "show_trajectories": False, "offroad_terminal": True,
+                "show_trajectories": True, "offroad_terminal": True,
                 "x_offset": 10, "y_offset": 10,
-                "road_segment_size": 80, "road_segment_gap": 8,
+                "road_segment_size": 75, "road_segment_gap": 8,
                 "road_extra_length": [10], "start_lane_index": 1,
-                "add_lane_edge_obstacles": False,
+                "add_lane_edge_obstacles": True,
                 "lane_edge_obstacle_width": 0.1,
             }
         )
@@ -177,16 +151,8 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
     def _reward(self, action: np.ndarray) -> float:
         # (Implementation from previous version - calls compute_reward, adds collision and shaping)
         # self.observation_type is KinematicsGoalObservation, so it returns the dict
+        total_reward = 0
         obs_dict = self.observation_type.observe()
-        achieved_goal = obs_dict["achieved_goal"]
-        desired_goal = obs_dict["desired_goal"]
-        is_success_flag = self._is_success(achieved_goal, desired_goal)
-        info_for_compute_reward = {
-            "is_crashed": self.vehicle.crashed if self.vehicle else True,
-            "is_success": is_success_flag, 
-        }
-        goal_based_reward = self.compute_reward(achieved_goal, desired_goal, info_for_compute_reward) # p defaults to 0.5
-        total_reward = goal_based_reward
         if self.vehicle and self.vehicle.crashed:
             total_reward += self.config["collision_reward"]
         action_penalty = self.config["action_penalty_weight"] * np.linalg.norm(action)
@@ -223,8 +189,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         crashed = self.vehicle.crashed if self.vehicle else True
         off_road = self.config["offroad_terminal"] and (self.vehicle and not self.vehicle.on_road)
         obs_dict = self.observation_type.observe() 
-        success = self._is_success(obs_dict["achieved_goal"], obs_dict["desired_goal"])
-        return bool(crashed or success or off_road)
+        return bool(crashed or off_road)
 
     def _is_truncated(self) -> bool:
         return self.time >= self.config["duration"]
@@ -244,8 +209,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         return obs_dict, info
 
     def _info(self, obs: dict, action: np.ndarray | list) -> dict:
-        is_success_flag = self._is_success(obs["achieved_goal"], obs["desired_goal"])
-        info_dict = {"is_success": is_success_flag}
+        info_dict = {}
         if self.vehicle:
             info_dict.update({
                 "speed": self.vehicle.speed, "crashed": self.vehicle.crashed,
@@ -442,20 +406,19 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
             np_random=self.np_random,
             record_history=self.config.get("show_trajectories", False)
         )
+
         if not hasattr(self.road, 'objects') or self.road.objects is None: 
             self.road.objects = []
         if self.config.get("add_lane_edge_obstacles", False):
             obstacle_width = self.config["lane_edge_obstacle_width"]
-            for lane_tuple in self._lane_ids: 
+            for lane_id in self._lane_ids: 
                 try:
-                    lane = self.road.network.get_lane(lane_tuple)
+                    lane = self.road.network.get_lane(lane_id)
                     if isinstance(lane, StraightLane):
                         lane_len = lane.length
                         if lane_len <= 1e-6: continue
                         direction = lane.end - lane.start; norm_val = np.linalg.norm(direction)
                         if norm_val < 1e-6: continue 
-                        norm_direction = direction / norm_val
-                        lane_normal_vec = np.array([-norm_direction[1], norm_direction[0]])
                         left_edge_center = lane.position(lane_len / 2, -lane.width / 2) 
                         obs_left = Obstacle(self.road, left_edge_center, heading=lane.heading_at(lane_len/2)) 
                         obs_left.LENGTH = lane_len; obs_left.WIDTH = obstacle_width
@@ -492,6 +455,30 @@ register(
 )
 
 if __name__ == "__main__":
+    # env_config = {
+    #     "start_lane_index": 0, 
+    #     "goal_lane_index_tuple": ("f", "g", 1), 
+    #     "goal_longitudinal_offset": 0.3, 
+    #     "duration": 800, 
+    #     "scaling": 3.5, 
+    #     "reward_weights": np.array([1.0, 1.0, 0.3, 0.3]), 
+    #     "success_goal_reward": 0.15, 
+    #     "collision_reward": -5.0,    
+    #     "action_penalty_weight": -0.02,
+    #     # Ensure the observation config in the test also reflects Lidar use
+    #     "observation": {
+    #         "type": "KinematicsGoal",
+    #         "goal_features": ["x", "y", "cos_h", "sin_h"], 
+    #         "goal_scales": [100, 100, 1, 1],
+    #         "observation_config": { # Specify Lidar for the 'observation' part
+    #             "type": "LidarObservation",
+    #                                "cells": 40, "max_distance": 30.0, "normalize": True, "see_behind": True,
+    #         },
+    #         "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"], # Fallback for KinematicsGoal's own obs
+    #         "scales": [100, 100, 10, 10, 1, 1],
+    #     },
+    #     "action": { "type": "ContinuousAction", "longitudinal": True, "lateral": True }
+    # }
     env = gym.make("DrivingClass-v0", render_mode="human")
     
     print(f"--- {env.spec.id if env.spec else 'DrivingClass-v0'} (Lidar + Goal) Test ---")
@@ -504,21 +491,15 @@ if __name__ == "__main__":
     for episode in range(num_episodes):
         print(f"\n--- Episode {episode + 1}/{num_episodes} ---")
         obs_dict, info = env.reset() 
-        if obs_dict.get("desired_goal") is not None:
-            goal_str = [f"{c:.2f}" for c in obs_dict['desired_goal']]
-            print(f"Desired Goal (x,y,cosH,sinH): {goal_str}")
         terminated = False; truncated = False; total_reward_ep = 0.0; step_count = 0
         while not (terminated or truncated):
             action = env.action_space.sample()
             obs_dict, reward_val, terminated, truncated, info = env.step(action)
             total_reward_ep += reward_val; step_count += 1
             
-            # The 'observation' field in obs_dict is now Lidar data
-            lidar_data = obs_dict['observation'] 
-            ach_goal_str = [f"{c:.2f}" for c in obs_dict['achieved_goal']]
             act_str = [f"{a:.2f}" for a in action] if isinstance(action, np.ndarray) else str(action)
             if (step_count) % 50 == 0:
-                print(f"  St {step_count}, Act: {act_str}, Rew: {reward_val:.3f}, Lidar Sum: {np.sum(lidar_data):.2f}, Succ: {info.get('is_success', False)}")
+                print(f"  St {step_count}, Act: {act_str}, Rew: {reward_val:.3f}, Succ: {info.get('is_success', False)}")
 
             if terminated: print(f"Terminated: Steps {step_count}. Success: {info.get('is_success', False)}")
             if truncated: print(f"Truncated: Steps {step_count}. Success: {info.get('is_success', False)}")

@@ -5,12 +5,12 @@ from stable_baselines3.common.env_checker import check_env
 import driving_class
 
 env_id = "DrivingClass-v0"
-env = gym.make(env_id)
+env = gym.make(env_id, render_mode="human")
 
-check_env(env, warn=True)
+# check_env(env, warn=True)
 
 model = PPO(
-    "MlpPolicy",    
+    "MultiInputPolicy",    
     env,
     verbose=1,      
     tensorboard_log="./ppo_driving_class_tensorboard/"

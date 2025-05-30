@@ -1,23 +1,70 @@
 from __future__ import annotations
 
+from abc import abstractmethod # For GoalEnv interface
+
 import numpy as np
+import gymnasium as gym 
+from gymnasium import spaces
+from gymnasium.core import ObsType 
+from gymnasium import Env # For GoalEnv interface
 
 from highway_env import utils
-from highway_env.envs.common.abstract import AbstractEnv
+from highway_env.envs.common.abstract import AbstractEnv 
+from highway_env.envs.common.observation import observation_factory, KinematicsGoalObservation, LidarObservation # Ensure LidarObservation is conceptually available
 from highway_env.road.lane import LineType, StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.behavior import IDMVehicle
+from highway_env.vehicle.kinematics import Vehicle
+from highway_env.vehicle.objects import Landmark
+from highway_env.vehicle.graphics import VehicleGraphics
 from gymnasium.envs.registration import register
-from highway_env.road.lane import CircularLane, LineType
 
+# User-provided GoalEnv interface
+class GoalEnv(Env):
+    """ Interface for A goal-based environment. (Docstring from user) """
+    @abstractmethod
+    def compute_reward(
+        self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict
+    ) -> float:
+        """Compute the step reward. (Docstring from user)"""
+        raise NotImplementedError
 
-class DrivingClassEnv(AbstractEnv):
+class DrivingClassEnv(AbstractEnv, GoalEnv):
     """
-    A continuous control environment.
-    The agent needs to learn two skills:
-    - follow the tracks (now a square/rectangular track)
-    - avoid collisions with other vehicles
+    Goal-conditioned Driving Class scenario with Lidar observation.
+    Agent uses Lidar for local perception and kinematic goals for task completion.
     """
+    # INTERNAL_KINEMATICS_CONFIG is used if main obs type is not KinematicsGoal,
+    # to ensure we can always get kinematic achieved/desired goals for reward.
+    # However, with KinematicsGoal as the main wrapper, this might be redundant
+    # if KinematicsGoal itself can provide these for internal calculations.
+    INTERNAL_KINEMATICS_CONFIG = {
+        "type": "KinematicsGoal", # This is a bit meta, usually it would be just "Kinematics"
+        "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"],
+        "goal_features": ["x", "y", "cos_h", "sin_h"], # Define how internal goals are structured
+        "scales": [100, 100, 10, 10, 1, 1], 
+        "goal_scales": [100, 100, 1, 1], 
+        "normalize": False,
+    }
+
+    def __init__(self, config: dict = None, render_mode: str | None = None) -> None:
+        self.goal_landmark: Landmark | None = None
+        super().__init__(config, render_mode) 
+        
+        # self.observation_type is now KinematicsGoalObservation.
+        # Its sub_observation (for the 'observation' field) will be LidarObservation.
+        # For internal reward/success calculations, we need access to kinematic achieved/desired goals.
+        # KinematicsGoalObservation itself provides these as obs_dict['achieved_goal'] and obs_dict['desired_goal'].
+        # So, we can directly use the output of self.observation_type.observe() for these.
+        # The self.kinematics_goal_observer can be simplified or confirmed to be self.observation_type.
+        if not isinstance(self.observation_type, KinematicsGoalObservation):
+            # This case should ideally not happen if config["observation"]["type"] is "KinematicsGoal"
+            # print("Warning: Main observation type is not KinematicsGoal. Setting up separate kinematics_goal_observer.")
+            # This separate observer is for internal calculations if the main obs isn't already structured.
+            self.kinematics_goal_observer = observation_factory(self, self.INTERNAL_KINEMATICS_CONFIG)
+        else:
+            self.kinematics_goal_observer = self.observation_type
+
 
     @classmethod
     def default_config(cls) -> dict:
@@ -25,396 +72,300 @@ class DrivingClassEnv(AbstractEnv):
         config.update(
             {
                 "observation": {
-                    "type": "OccupancyGrid",
-                    "features": ["presence", "on_road"],
-                    "grid_size": [[-20, 20], [-20, 20]],
-                    "grid_step": [2, 2],
-                    "as_image": False,
-                    "align_to_vehicle_axes": True,
+                    "type": "KinematicsGoal",  # Top-level wrapper for GoalEnv structure
+                    
+                    # Config for the 'achieved_goal' and 'desired_goal' parts
+                    "goal_features": ["x", "y", "cos_h", "sin_h"], 
+                    "goal_scales": [100, 100, 1, 1], # Scales for goal features
+                    "normalize_goal": False, # Whether to normalize achieved/desired goals
+
+                    # Config for the 'observation' part of the KinematicsGoal dict: Lidar
+                    "observation_config": {
+                        "type": "LidarObservation",
+                        "angle_range": [-np.pi, np.pi], # Full 360-degree Lidar
+                        "cells": 50,                     # Number of Lidar beams
+                        "max_distance": 30.0,            # Max Lidar distance (meters)
+                        "normalize": True,               # Normalize Lidar distances to [0, 1]
+                        "see_behind": True,              # Allow Lidar to see behind
+                        "gaussian_noise": 0.01,        # Optional: add noise (proportion of max_distance)
+                    },
+                    
+                    # These are for the KinematicsGoal wrapper itself, 
+                    # defining its default base observation IF observation_config was not given.
+                    # Since observation_config IS given, these 'features' and 'scales'
+                    # for the base 'observation' part are effectively overridden by Lidar.
+                    "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"], # Fallback/default for 'observation' field
+                    "scales": [100, 100, 10, 10, 1, 1],
+                    "normalize": False # Normalization for the wrapper itself if it were to use its own kinematics for 'observation'
                 },
                 "action": {
-                    "type": "ContinuousAction",
-                    "longitudinal": False,
-                    "lateral": True,
-                    "target_speeds": [0, 5, 10], # This is where target_speeds is defined
+                    "type": "ContinuousAction", "longitudinal": True, "lateral": True,
+                    "acceleration_range": [-3.5, 3.5], "steering_range": [-np.pi / 3, np.pi / 3], 
                 },
-                "simulation_frequency": 15,
-                "policy_frequency": 5,
-                "duration": 300, # seconds
-                "collision_reward": -1.0,
-                "lane_centering_cost": 4,
-                "lane_centering_reward": 1.0,
-                "action_reward": -0.3,
-                "controlled_vehicles": 1,
-                "other_vehicles": 0,
-                "screen_width": 1200,
-                "screen_height": 900,
-                "centering_position": [0.5, 0.5],
-                "scaling": 5.0,
-                "speed_limit": 10.0,
-                "track_side_length": 30.0,
-                "lane_width": 8.0,
-                "show_trajectories": False,
-                "offroad_terminal": True, # Terminate if vehicle goes off-road
+                "simulation_frequency": 15, "policy_frequency": 5, "duration": 300,
+                "reward_weights": np.array([1.0, 1.0, 0.3, 0.3]), # For [x, y, cos_h, sin_h] goal features
+                "collision_reward": -150.0, 
+                "success_goal_reward": 0.15, # Used in _is_success: compute_reward_val > -this_value
+                "action_penalty_weight": -0.02, 
+                "on_road_shaping_reward": 0.005, 
+                "lane_centering_shaping_reward": 0.005,
+                "lane_centering_cost_factor": 4,
+                "controlled_vehicles": 1, "other_vehicles": 0, 
+                "goal_lane_index_tuple": ("f", "g", 1), 
+                "goal_longitudinal_offset": 0.5, 
+                "goal_heading_noise_std": np.deg2rad(3), 
+                "goal_position_noise_std": 0.1, 
+                "success_distance_threshold": 0.75, # Adjusted physical threshold for success
+                "success_heading_threshold_rad": np.deg2rad(15), # Adjusted
+                "screen_width": 1200, "screen_height": 900,
+                "centering_position": [0.3, 0.6], "scaling": 3.5, 
+                "lane_width": 4.0, 
+                "show_trajectories": False, "offroad_terminal": True,
+                "x_offset": 10, "y_offset": 10,
+                "road_segment_size": 75, "road_segment_gap": 8,
+                "road_extra_length": [10], "start_lane_index": 0,
             }
         )
         return config
 
-    def _reward(self, action: np.ndarray) -> float:
-        rewards = self._rewards(action)
-        reward = sum(
-            self.config.get(name, 0) * reward_value for name, reward_value in rewards.items()
-        )
-        reward = utils.lmap(reward, [self.config["collision_reward"], self.config["lane_centering_reward"]], [0, 1])
-        reward *= rewards["on_road_reward"]
-        return reward
+    def _set_destination(self) -> None:
+        # (Implementation from previous version - unchanged)
+        if not self._lane_ids or self.vehicle is None:
+            if self.goal_landmark and self.goal_landmark in self.road.objects: self.road.objects.remove(self.goal_landmark)
+            self.goal_landmark = None
+            if self.vehicle: self.vehicle.goal = None; return
 
-    def _rewards(self, action: np.ndarray) -> dict[str, float]:
-        lateral_offset = 0.0
-        on_road = self.vehicle.on_road
-        if on_road and self.vehicle.lane: # Check if vehicle.lane is not None
-            _, lateral_offset = self.vehicle.lane.local_coordinates(self.vehicle.position)
+        goal_lane_id_tuple = self.config["goal_lane_index_tuple"]
+        if goal_lane_id_tuple not in self._lane_ids:
+            goal_lane_id_tuple = self._lane_ids[-1] if self._lane_ids else None
+            if not goal_lane_id_tuple:
+                 if self.goal_landmark and self.goal_landmark in self.road.objects: self.road.objects.remove(self.goal_landmark)
+                 self.goal_landmark = None; self.vehicle.goal = None; return
+        try:
+            goal_lane_object = self.road.network.get_lane(goal_lane_id_tuple)
+            long_offset_factor = np.clip(self.config["goal_longitudinal_offset"], 0.05, 0.95)
+            goal_pos_on_lane = goal_lane_object.position(goal_lane_object.length * long_offset_factor, 0)
+            goal_heading_on_lane = goal_lane_object.heading_at(goal_lane_object.length * long_offset_factor)
+            goal_pos_on_lane[0] += self.np_random.normal(0, self.config["goal_position_noise_std"])
+            goal_pos_on_lane[1] += self.np_random.normal(0, self.config["goal_position_noise_std"])
+            goal_heading_on_lane += self.np_random.normal(0, self.config["goal_heading_noise_std"])
+            
+            if self.goal_landmark and self.goal_landmark in self.road.objects: self.road.objects.remove(self.goal_landmark)
+            self.goal_landmark = Landmark(self.road, goal_pos_on_lane, heading=goal_heading_on_lane) 
+            self.goal_landmark.color = (0, 200, 0); self.goal_landmark.length = self.config["lane_width"] * 0.7
+            self.goal_landmark.width = self.config["lane_width"] * 0.7
+            self.road.objects.append(self.goal_landmark)
+            self.vehicle.goal = self.goal_landmark 
+        except KeyError:
+            if self.goal_landmark and self.goal_landmark in self.road.objects: self.road.objects.remove(self.goal_landmark)
+            self.goal_landmark = None; self.vehicle.goal = None
+
+    def compute_reward(self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict, p: float = 0.5) -> float:
+        # (Implementation from previous version - uses p from signature, reward_weights from config)
+        current_reward_weights = np.array(self.config["reward_weights"])
+        if len(current_reward_weights) != len(achieved_goal): # achieved_goal is [x,y,cos,sin]
+            # This check might be problematic if achieved_goal has different length than goal_features due to config
+            # However, KinematicsGoalObservation should ensure they match goal_features length.
+            # print("Warning: Mismatch in reward_weights length. Using unweighted norm.")
+            return -np.power(np.linalg.norm(achieved_goal - desired_goal, ord=int(p)), p)
         
-        lane_centering_reward = 0.0
-        if on_road:
-             lane_centering_reward = 1 / (1 + self.config["lane_centering_cost"] * lateral_offset**2)
+        return -np.power(
+            np.dot(np.abs(achieved_goal - desired_goal), current_reward_weights), p)
 
-        return {
-            "lane_centering_reward": lane_centering_reward,
-            "action_reward": np.linalg.norm(action),
-            "collision_reward": float(self.vehicle.crashed),
-            "on_road_reward": float(on_road),
+    def _reward(self, action: np.ndarray) -> float:
+        # (Implementation from previous version - calls compute_reward, adds collision and shaping)
+        # self.observation_type is KinematicsGoalObservation, so it returns the dict
+        obs_dict = self.observation_type.observe()
+        achieved_goal = obs_dict["achieved_goal"]
+        desired_goal = obs_dict["desired_goal"]
+        is_success_flag = self._is_success(achieved_goal, desired_goal)
+        info_for_compute_reward = {
+            "is_crashed": self.vehicle.crashed if self.vehicle else True,
+            "is_success": is_success_flag, 
         }
+        goal_based_reward = self.compute_reward(achieved_goal, desired_goal, info_for_compute_reward) # p defaults to 0.5
+        total_reward = goal_based_reward
+        if self.vehicle and self.vehicle.crashed:
+            total_reward += self.config["collision_reward"]
+        action_penalty = self.config["action_penalty_weight"] * np.linalg.norm(action)
+        total_reward += action_penalty
+        if self.vehicle:
+            on_road_value = float(self.vehicle.on_road)
+            total_reward += self.config["on_road_shaping_reward"] * on_road_value
+            lane_centering_value = 0.0
+            if self.vehicle.on_road and self.vehicle.lane_index:
+                try:
+                    current_lane = self.road.network.get_lane(self.vehicle.lane_index)
+                    _, lateral_offset = current_lane.local_coordinates(self.vehicle.position)
+                    lane_centering_value = 1 / (1 + self.config["lane_centering_cost_factor"] * lateral_offset**2)
+                except KeyError: pass 
+            total_reward += self.config["lane_centering_shaping_reward"] * lane_centering_value
+        return float(total_reward)
+
+    def _is_success(self, achieved_goal: np.ndarray, desired_goal: np.ndarray) -> bool:
+        # Using physical thresholds for clarity, can also use compute_reward as before
+        dist_sq = np.sum(np.square(achieved_goal[0:2] - desired_goal[0:2]))
+        position_ok = dist_sq < self.config["success_distance_threshold"]**2
+        
+        # Ensure goals have heading components (indices 2 and 3 for cos_h, sin_h)
+        if len(achieved_goal) >= 4 and len(desired_goal) >= 4:
+            cos_delta_angle = np.clip(np.dot(achieved_goal[2:4], desired_goal[2:4]), -1.0, 1.0)
+            heading_ok = cos_delta_angle >= np.cos(self.config["success_heading_threshold_rad"])
+        else: # If goal_features doesn't include heading, consider heading always OK for success
+            heading_ok = True 
+            # print("Warning: Heading components not found in achieved/desired goal for success check.")
+
+        return bool(position_ok and heading_ok)
 
     def _is_terminated(self) -> bool:
-        terminated = self.vehicle.crashed
-        if self.config["offroad_terminal"] and not self.vehicle.on_road:
-            terminated = True
-        return terminated
+        crashed = self.vehicle.crashed if self.vehicle else True
+        off_road = self.config["offroad_terminal"] and (self.vehicle and not self.vehicle.on_road)
+        obs_dict = self.observation_type.observe() 
+        success = self._is_success(obs_dict["achieved_goal"], obs_dict["desired_goal"])
+        return bool(crashed or success or off_road)
 
     def _is_truncated(self) -> bool:
         return self.time >= self.config["duration"]
 
-    def _reset(self) -> None:
-        self._create_road()
-        self._make_vehicles()
-        if not self.config["action"].get("longitudinal", True) and hasattr(self.vehicle, 'target_speed'):
-            # Set a default target speed from the middle of the available speeds
-            # Access target_speeds correctly from the 'action' sub-dictionary
-            num_speeds = len(self.config["action"]["target_speeds"]) # CORRECTED
-            if num_speeds > 0:
-                self.vehicle.target_speed = self.config["action"]["target_speeds"][num_speeds // 2] # CORRECTED
+    def _reset(self) -> tuple[ObsType, dict]:
+        self.time = 0; self.terminated = False; self.truncated = False
+        self._create_road(); self._make_vehicles() 
+        self._set_destination() 
+        action_config = self.config["action"]
+        if self.vehicle and action_config.get("longitudinal", True) is False and hasattr(self.vehicle, 'target_speed'):
+            target_speeds = action_config.get("target_speeds") 
+            if target_speeds and len(target_speeds) > 0:
+                self.vehicle.target_speed = target_speeds[len(target_speeds) // 2] 
+        obs_dict = self.observation_type.observe() 
+        dummy_action = self.action_space.sample() 
+        info = self._info(obs_dict, dummy_action) 
+        return obs_dict, info
 
+    def _info(self, obs: dict, action: np.ndarray | list) -> dict:
+        is_success_flag = self._is_success(obs["achieved_goal"], obs["desired_goal"])
+        info_dict = {"is_success": is_success_flag}
+        if self.vehicle:
+            info_dict.update({
+                "speed": self.vehicle.speed, "crashed": self.vehicle.crashed,
+                "on_road": self.vehicle.on_road,
+                "action": action.tolist() if isinstance(action, np.ndarray) else action,
+            })
+        # Add Lidar to info for debugging if needed, but it's already in obs['observation']
+        # if "observation" in obs and isinstance(obs["observation"], np.ndarray):
+        #    info_dict["lidar_sample"] = obs["observation"][:5].tolist() # Sample of lidar
+        return info_dict
 
     def _create_road(self) -> None:
-        """
-        Create a circular (ring-shaped) road.
-        """
+        # (Implementation from user's previous version - unchanged)
         net = RoadNetwork()
-        width = 4.0
+        base_width = self.config["lane_width"] 
+        actual_lane_width_for_segment = base_width * 2
         c, s, n = LineType.CONTINUOUS, LineType.STRIPED, LineType.NONE
-        line_type = [[c, c], [n, c]]
-        x_offset = 10
-        y_offset = 10
-        size = 75
-        gap = 8
-        length = [10]
-        self._lane_ids = []
-
-        # (0, 0) to (0, 1)
-        net.add_lane(
-            "a",
-            "b",
-            StraightLane(
-                [x_offset + width, y_offset],
-                [x_offset + width, y_offset + width * 2],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("a", "b", 0))
-        net.add_lane(
-            "a",
-            "b",
-            StraightLane(
-                [x_offset + width, y_offset + width * 2],
-                [x_offset + width, y_offset + width * 2 + size],
-                width=width * 2,
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("a", "b", 1))
-        net.add_lane(
-            "a",
-            "b",
-            StraightLane(
-                [x_offset + width, y_offset + width * 2 + size],
-                [x_offset + width, y_offset + width * 4 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("a", "b", 2))
-        
-        # (0, 1) to (1, 1)
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset, y_offset + width * 3 + size],
-                [x_offset + width * 2, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("b", "c", 0))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset + width * 2, y_offset + width * 3 + size],
-                [x_offset + width * 2 + gap, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("b", "c", 1))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset + width * 2 + gap, y_offset + width * 3 + size],
-                [x_offset + width * 2 + gap + width * 2, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("b", "c", 2))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2, y_offset + width * 3 + size],
-                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("b", "c", 3))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 3 + size],
-                [x_offset + width * 2 + gap + width * 2 + gap + length[0], y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("b", "c", 4))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap + length[0], y_offset + width * 3 + size],
-                [x_offset + width * 2 + size, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("b", "c", 5))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset + width * 2 + size, y_offset + width * 3 + size],
-                [x_offset + width * 4 + size, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("b", "c", 6))
-
-        # (1, 1) to (1, 0)
-        net.add_lane(
-            "c",
-            "d",
-            StraightLane(
-                [x_offset + width * 3 + size, y_offset + width * 4 + size],
-                [x_offset + width * 3 + size, y_offset + width * 2 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("c", "d", 0))
-        net.add_lane(
-            "c",
-            "d",
-            StraightLane(
-                [x_offset + width * 3 + size, y_offset + width * 2 + size],
-                [x_offset + width * 3 + size, y_offset + width * 2],
-                width=width * 2,
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("c", "d", 1))
-        net.add_lane(
-            "c",
-            "d",
-            StraightLane(
-                [x_offset + width * 3 + size, y_offset + width * 2],
-                [x_offset + width * 3 + size, y_offset],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("c", "d", 2))
-
-        # (1, 0) to (0, 0)
-        net.add_lane(
-            "d",
-            "e",
-            StraightLane(
-                [x_offset + width * 4 + size, y_offset + width],
-                [x_offset + width * 2 + size, y_offset + width],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("d", "e", 0))
-        net.add_lane(
-            "d",
-            "e",
-            StraightLane(
-                [x_offset + width * 2 + size, y_offset + width],
-                [x_offset + width * 2, y_offset + width],
-                width=width * 2,
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("d", "e", 1))
-        net.add_lane(
-            "d",
-            "e",
-            StraightLane(
-                [x_offset + width * 2, y_offset + width],
-                [x_offset, y_offset + width],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("d", "e", 2))
-
-        # 倒車
-        net.add_lane(
-            "e",
-            "f",
-            StraightLane(
-                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size],
-                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size - length[0]],
-                width=width * 2,
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("e", "f", 0))
-        net.add_lane(
-            "e",
-            "f",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2, y_offset + width * 2 + size - length[0] + (width * 2 + length[0]) / 2],
-                [x_offset + width * 2 + gap, y_offset + width * 2 + size - length[0] + (width * 2 + length[0]) / 2],
-                width=width * 2 + length[0],
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("e", "f", 1))
-
-        # 路邊停車
-        net.add_lane(
-            "f",
-            "g",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap + length[0], y_offset + width * 2 + size - width],
-                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 2 + size - width],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("f", "g", 0))
-        net.add_lane(
-            "f",
-            "g",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap + length[0] / 2, y_offset + width * 2 + size],
-                [x_offset + width * 2 + gap + width * 2 + gap + length[0] / 2, y_offset + width * 2 + size - width * 2],
-                width=length[0],
-                line_types=line_type[0]
-            )
-        )
-        self._lane_ids.append(("f", "g", 1))
-
-        self.road = Road(
-            network=net,
-            np_random=self.np_random,
-            record_history=self.config.get("show_trajectories", False)
-        )
-
+        line_type_defs = [[c, c], [n, c]]
+        x_offset = self.config["x_offset"]; y_offset = self.config["y_offset"]
+        segment_size = self.config["road_segment_size"]; gap_size = self.config["road_segment_gap"]
+        extra_len = self.config["road_extra_length"][0] 
+        self._lane_ids = [] 
+        net.add_lane("a","b",StraightLane([x_offset + base_width, y_offset],[x_offset + base_width, y_offset + base_width * 2],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("a", "b", 0))
+        net.add_lane("a","b",StraightLane([x_offset + base_width, y_offset + base_width * 2],[x_offset + base_width, y_offset + base_width * 2 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[0])); self._lane_ids.append(("a", "b", 1))
+        net.add_lane("a","b",StraightLane([x_offset + base_width, y_offset + base_width * 2 + segment_size],[x_offset + base_width, y_offset + base_width * 4 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("a", "b", 2))
+        net.add_lane("b","c",StraightLane([x_offset, y_offset + base_width * 3 + segment_size],[x_offset + base_width * 2, y_offset + base_width * 3 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("b", "c", 0))
+        net.add_lane("b","c",StraightLane([x_offset + base_width * 2, y_offset + base_width * 3 + segment_size],[x_offset + base_width * 2 + gap_size, y_offset + base_width * 3 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[0])); self._lane_ids.append(("b", "c", 1))
+        net.add_lane("b","c",StraightLane([x_offset + base_width * 2 + gap_size, y_offset + base_width * 3 + segment_size],[x_offset + base_width * 2 + gap_size + base_width * 2, y_offset + base_width * 3 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("b", "c", 2))
+        net.add_lane("b","c",StraightLane([x_offset + base_width * 2 + gap_size + base_width * 2, y_offset + base_width * 3 + segment_size],[x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size, y_offset + base_width * 3 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[0])); self._lane_ids.append(("b", "c", 3))
+        net.add_lane("b","c",StraightLane([x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size, y_offset + base_width * 3 + segment_size],[x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size + extra_len, y_offset + base_width * 3 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("b", "c", 4))
+        net.add_lane("b","c",StraightLane([x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size + extra_len, y_offset + base_width * 3 + segment_size],[x_offset + base_width * 2 + segment_size, y_offset + base_width * 3 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[0])); self._lane_ids.append(("b", "c", 5))
+        net.add_lane("b","c",StraightLane([x_offset + base_width * 2 + segment_size, y_offset + base_width * 3 + segment_size],[x_offset + base_width * 4 + segment_size, y_offset + base_width * 3 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("b", "c", 6))
+        net.add_lane("c","d",StraightLane([x_offset + base_width * 3 + segment_size, y_offset + base_width * 4 + segment_size],[x_offset + base_width * 3 + segment_size, y_offset + base_width * 2 + segment_size],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("c", "d", 0))
+        net.add_lane("c","d",StraightLane([x_offset + base_width * 3 + segment_size, y_offset + base_width * 2 + segment_size],[x_offset + base_width * 3 + segment_size, y_offset + base_width * 2],width=actual_lane_width_for_segment,line_types=line_type_defs[0])); self._lane_ids.append(("c", "d", 1))
+        net.add_lane("c","d",StraightLane([x_offset + base_width * 3 + segment_size, y_offset + base_width * 2],[x_offset + base_width * 3 + segment_size, y_offset],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("c", "d", 2))
+        net.add_lane("d","e",StraightLane([x_offset + base_width * 4 + segment_size, y_offset + base_width],[x_offset + base_width * 2 + segment_size, y_offset + base_width],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("d", "e", 0))
+        net.add_lane("d","e",StraightLane([x_offset + base_width * 2 + segment_size, y_offset + base_width],[x_offset + base_width * 2, y_offset + base_width],width=actual_lane_width_for_segment,line_types=line_type_defs[0])); self._lane_ids.append(("d", "e", 1))
+        net.add_lane("d","e",StraightLane([x_offset + base_width * 2, y_offset + base_width],[x_offset, y_offset + base_width],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("d", "e", 2))
+        net.add_lane("e","f",StraightLane([x_offset + base_width * 2 + gap_size + base_width, y_offset + base_width * 2 + segment_size],[x_offset + base_width * 2 + gap_size + base_width, y_offset + base_width * 2 + segment_size - extra_len],width=actual_lane_width_for_segment,line_types=line_type_defs[0])); self._lane_ids.append(("e", "f", 0)) 
+        net.add_lane("e","f",StraightLane([x_offset + base_width * 2 + gap_size + base_width * 2, y_offset + base_width * 2 + segment_size - extra_len + (actual_lane_width_for_segment + extra_len) / 2],[x_offset + base_width * 2 + gap_size, y_offset + base_width * 2 + segment_size - extra_len + (actual_lane_width_for_segment + extra_len) / 2],width=actual_lane_width_for_segment + extra_len,line_types=line_type_defs[0])); self._lane_ids.append(("e", "f", 1)) 
+        net.add_lane("f","g",StraightLane([x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size + extra_len, y_offset + base_width * 2 + segment_size - base_width],[x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size, y_offset + base_width * 2 + segment_size - base_width],width=actual_lane_width_for_segment,line_types=line_type_defs[1])); self._lane_ids.append(("f", "g", 0)) 
+        net.add_lane("f","g",StraightLane([x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size + extra_len / 2, y_offset + base_width * 2 + segment_size],[x_offset + base_width * 2 + gap_size + base_width * 2 + gap_size + extra_len / 2, y_offset + base_width * 2 + segment_size - base_width * 2],width=extra_len,line_types=line_type_defs[0])); self._lane_ids.append(("f", "g", 1)) 
+        self.road = Road(network=net, np_random=self.np_random, record_history=self.config["show_trajectories"])
+        if not hasattr(self.road, 'objects') or self.road.objects is None: self.road.objects = []
 
     def _make_vehicles(self) -> None:
-        rng = self.np_random
-        self.controlled_vehicles = []
+        # (Implementation from previous version - unchanged)
+        rng = self.np_random; self.controlled_vehicles = []; self.road.vehicles = [] 
+        if not self._lane_ids: self.vehicle = None; return
+        chosen_lane_idx = self.config.get("start_lane_index", 0) 
+        if not (0 <= chosen_lane_idx < len(self._lane_ids)): chosen_lane_idx = 0 
+        fixed_lane_id_tuple = self._lane_ids[chosen_lane_idx]
+        try: lane_object = self.road.network.get_lane(fixed_lane_id_tuple)
+        except KeyError: self.vehicle = None; return
+        current_lane_length = lane_object.length
+        initial_longitudinal = current_lane_length * 0.05 if current_lane_length > 0 else 0.0
+        initial_speed = 0.0 
+        controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
+            self.road, lane_index=fixed_lane_id_tuple, speed=initial_speed, longitudinal=initial_longitudinal)
+        self.controlled_vehicles.append(controlled_vehicle); self.road.vehicles.append(controlled_vehicle)
+        self.vehicle = controlled_vehicle; self.vehicle.goal = None
 
-        fixed_lane_id_tuple = ("a", "b", 0)
-        lane_object = self.road.network.get_lane(fixed_lane_id_tuple)
-        initial_longitudinal = 0.0  
-
-        for i in range(self.config["controlled_vehicles"]):
-            spawn_longitudinal = initial_longitudinal + i * 8
-            initial_speed = 0
-            num_speeds = len(self.config["action"]["target_speeds"])
-            if num_speeds > 0:
-                initial_speed = self.config["action"]["target_speeds"][num_speeds // 2]
-            
-            controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
-                self.road,
-                lane_index=fixed_lane_id_tuple,
-                speed=initial_speed,
-                longitudinal=spawn_longitudinal
-            )
-            self.controlled_vehicles.append(controlled_vehicle)
-            self.road.vehicles.append(controlled_vehicle)
-            if i == 0:
-                self.vehicle = controlled_vehicle
-
-        for i in range(self.config["other_vehicles"]):
-            npc_longitudinal = 10 + i * 10
-            npc_speed = rng.uniform(low=self.config["speed_limit"] * 0.2, high=self.config["speed_limit"] * 0.6)
-            npc = IDMVehicle.make_on_lane(
-                self.road,
-                lane_index=fixed_lane_id_tuple,
-                longitudinal=npc_longitudinal,
-                speed=npc_speed
-            )
-            self.road.vehicles.append(npc)
-
-    
-    def _info(self, obs, action) -> dict:
-        info = {
-            "speed": self.vehicle.speed,
-            "crashed": self.vehicle.crashed,
-            "on_road": self.vehicle.on_road,
-            "action": action,
-        }
-        if hasattr(self.vehicle, 'lane_index') and self.vehicle.lane_index is not None:
-            info["lane_index"] = self.vehicle.lane_index
-        if hasattr(self.vehicle, 'lane') and self.vehicle.lane is not None:
-             _, lateral = self.vehicle.lane.local_coordinates(self.vehicle.position)
-             info["lateral_offset"] = lateral
-        else:
-            info["lateral_offset"] = "N/A (off-lane or no lane)"
-        return info
-
+# --- Registration and Test Script ---
 register(
     id="DrivingClass-v0", 
-    entry_point="driving_class:DrivingClassEnv",
+    entry_point=f"{__name__}:DrivingClassEnv",
 )
+
+if __name__ == "__main__":
+    env_config = {
+        "start_lane_index": 0, 
+        "goal_lane_index_tuple": ("f", "g", 1), 
+        "goal_longitudinal_offset": 0.3, 
+        "duration": 800, 
+        "scaling": 3.5, 
+        "reward_weights": np.array([1.0, 1.0, 0.3, 0.3]), 
+        "success_goal_reward": 0.15, 
+        "collision_reward": -5.0,    
+        "action_penalty_weight": -0.02,
+        # Ensure the observation config in the test also reflects Lidar use
+        "observation": {
+            "type": "KinematicsGoal",
+            "goal_features": ["x", "y", "cos_h", "sin_h"], 
+            "goal_scales": [100, 100, 1, 1],
+            "observation_config": { # Specify Lidar for the 'observation' part
+                "type": "LidarObservation",
+                                   "cells": 40, "max_distance": 30.0, "normalize": True, "see_behind": True,
+            },
+            "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"], # Fallback for KinematicsGoal's own obs
+            "scales": [100, 100, 10, 10, 1, 1],
+        },
+        "action": { "type": "ContinuousAction", "longitudinal": True, "lateral": True }
+    }
+    env = gym.make("DrivingClass-v0", render_mode="human", config=env_config)
+    
+    print(f"--- {env.spec.id if env.spec else 'DrivingClass-v0'} (Lidar + Goal) Test ---")
+    print(f"Observation space: {env.observation_space}")
+    # Example of accessing sub-spaces:
+    # print(f"  Lidar observation part space: {env.observation_space['observation']}")
+    # print(f"  Achieved goal space: {env.observation_space['achieved_goal']}")
+
+    num_episodes = 3
+    for episode in range(num_episodes):
+        print(f"\n--- Episode {episode + 1}/{num_episodes} ---")
+        obs_dict, info = env.reset() 
+        if obs_dict.get("desired_goal") is not None:
+            goal_str = [f"{c:.2f}" for c in obs_dict['desired_goal']]
+            print(f"Desired Goal (x,y,cosH,sinH): {goal_str}")
+        terminated = False; truncated = False; total_reward_ep = 0.0; step_count = 0
+        while not (terminated or truncated):
+            action = env.action_space.sample()
+            obs_dict, reward_val, terminated, truncated, info = env.step(action)
+            total_reward_ep += reward_val; step_count += 1
+            
+            # The 'observation' field in obs_dict is now Lidar data
+            lidar_data = obs_dict['observation'] 
+            ach_goal_str = [f"{c:.2f}" for c in obs_dict['achieved_goal']]
+            act_str = [f"{a:.2f}" for a in action] if isinstance(action, np.ndarray) else str(action)
+            if (step_count) % 50 == 0:
+                print(f"  St {step_count}, Act: {act_str}, Rew: {reward_val:.3f}, Lidar Sum: {np.sum(lidar_data):.2f}, Succ: {info.get('is_success', False)}")
+
+            if terminated: print(f"Terminated: Steps {step_count}. Success: {info.get('is_success', False)}")
+            if truncated: print(f"Truncated: Steps {step_count}. Success: {info.get('is_success', False)}")
+        print(f"Ep {episode + 1} end. TotRew: {total_reward_ep:.2f}, Steps: {step_count}")
+    env.close(); print("\n--- Test Finished ---")

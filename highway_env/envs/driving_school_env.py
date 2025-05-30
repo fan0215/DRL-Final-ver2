@@ -1,86 +1,23 @@
 from __future__ import annotations
 
-from abc import abstractmethod
-
 import numpy as np
-from gymnasium import Env
 
+from highway_env import utils
 from highway_env.envs.common.abstract import AbstractEnv
-from highway_env.envs.common.observation import (
-    MultiAgentObservation,
-    observation_factory,
-)
 from highway_env.road.lane import LineType, StraightLane
 from highway_env.road.road import Road, RoadNetwork
-from highway_env.vehicle.graphics import VehicleGraphics
-from highway_env.vehicle.kinematics import Vehicle
-from highway_env.vehicle.objects import Landmark, Obstacle
+from highway_env.vehicle.behavior import IDMVehicle
+from gymnasium.envs.registration import register
+from highway_env.road.lane import CircularLane, LineType
 
 
-class GoalEnv(Env):
-    """
-    Interface for A goal-based environment.
-
-    This interface is needed by agents such as Stable Baseline3's Hindsight Experience Replay (HER) agent.
-    It was originally part of https://github.com/openai/gym, but was later moved
-    to https://github.com/Farama-Foundation/gym-robotics. We cannot add gym-robotics to this project's dependencies,
-    since it does not have an official PyPi package, PyPi does not allow direct dependencies to git repositories.
-    So instead, we just reproduce the interface here.
-
-    A goal-based environment. It functions just as any regular OpenAI Gym environment but it
-    imposes a required structure on the observation_space. More concretely, the observation
-    space is required to contain at least three elements, namely `observation`, `desired_goal`, and
-    `achieved_goal`. Here, `desired_goal` specifies the goal that the agent should attempt to achieve.
-    `achieved_goal` is the goal that it currently achieved instead. `observation` contains the
-    actual observations of the environment as per usual.
-    """
-
-    @abstractmethod
-    def compute_reward(
-        self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict
-    ) -> float:
-        """Compute the step reward. This externalizes the reward function and makes
-        it dependent on a desired goal and the one that was achieved. If you wish to include
-        additional rewards that are independent of the goal, you can include the necessary values
-        to derive it in 'info' and compute it accordingly.
-        Args:
-            achieved_goal (object): the goal that was achieved during execution
-            desired_goal (object): the desired goal that we asked the agent to attempt to achieve
-            info (dict): an info dictionary with additional information
-        Returns:
-            float: The reward that corresponds to the provided achieved goal w.r.t. to the desired
-            goal. Note that the following should always hold true:
-                ob, reward, done, info = env.step()
-                assert reward == env.compute_reward(ob['achieved_goal'], ob['desired_goal'], info)
-        """
-        raise NotImplementedError
-
-
-class ParkingEnv(AbstractEnv, GoalEnv):
+class RacetrackEnv(AbstractEnv):
     """
     A continuous control environment.
-
-    It implements a reach-type task, where the agent observes their position and speed and must
-    control their acceleration and steering so as to reach a given goal.
-
-    Credits to Munir Jojo-Verge for the idea and initial implementation.
+    The agent needs to learn two skills:
+    - follow the tracks (now a square/rectangular track)
+    - avoid collisions with other vehicles
     """
-
-    # For parking env with GrayscaleObservation, the env need
-    # this PARKING_OBS to calculate the reward and the info.
-    # Bug fixed by Mcfly(https://github.com/McflyWZX)
-    PARKING_OBS = {
-        "observation": {
-            "type": "KinematicsGoal",
-            "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"],
-            "scales": [100, 100, 5, 5, 1, 1],
-            "normalize": False,
-        }
-    }
-
-    def __init__(self, config: dict = None, render_mode: str | None = None) -> None:
-        super().__init__(config, render_mode)
-        self.observation_type_parking = None
 
     @classmethod
     def default_config(cls) -> dict:
@@ -88,71 +25,101 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         config.update(
             {
                 "observation": {
-                    "type": "KinematicsGoal",
-                    "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"],
-                    "scales": [100, 100, 5, 5, 1, 1],
-                    "normalize": False,
+                    "type": "OccupancyGrid",
+                    "features": ["presence", "on_road"],
+                    "grid_size": [[-20, 20], [-20, 20]],
+                    "grid_step": [2, 2],
+                    "as_image": False,
+                    "align_to_vehicle_axes": True,
                 },
-                "action": {"type": "ContinuousAction"},
-                "reward_weights": [1, 0.3, 0, 0, 0.02, 0.02],
-                "success_goal_reward": 0.12,
-                "collision_reward": -5,
-                "steering_range": np.deg2rad(45),
+                "action": {
+                    "type": "ContinuousAction",
+                    "longitudinal": False,
+                    "lateral": True,
+                    "target_speeds": [0, 5, 10], # This is where target_speeds is defined
+                },
                 "simulation_frequency": 15,
                 "policy_frequency": 5,
-                "duration": 100,
+                "duration": 300, # seconds
+                "collision_reward": -1.0,
+                "lane_centering_cost": 4,
+                "lane_centering_reward": 1.0,
+                "action_reward": -0.3,
+                "controlled_vehicles": 1,
+                "other_vehicles": 3,
                 "screen_width": 600,
                 "screen_height": 600,
                 "centering_position": [0.5, 0.5],
-                "scaling": 7,
-                "controlled_vehicles": 1,
-                "vehicles_count": 0,
-                "add_walls": True,
+                "scaling": 7.0,
+                "speed_limit": 10.0,
+                "track_side_length": 30.0,
+                "lane_width": 4.0,
+                "show_trajectories": False,
+                "offroad_terminal": True, # Terminate if vehicle goes off-road
             }
         )
         return config
 
-    def define_spaces(self) -> None:
-        """
-        Set the types and spaces of observation and action from config.
-        """
-        super().define_spaces()
-        self.observation_type_parking = observation_factory(
-            self, self.PARKING_OBS["observation"]
+    def _reward(self, action: np.ndarray) -> float:
+        rewards = self._rewards(action)
+        reward = sum(
+            self.config.get(name, 0) * reward_value for name, reward_value in rewards.items()
         )
+        reward = utils.lmap(reward, [self.config["collision_reward"], self.config["lane_centering_reward"]], [0, 1])
+        reward *= rewards["on_road_reward"]
+        return reward
 
-    def _info(self, obs, action) -> dict:
-        info = super()._info(obs, action)
-        if isinstance(self.observation_type, MultiAgentObservation):
-            success = tuple(
-                self._is_success(agent_obs["achieved_goal"], agent_obs["desired_goal"])
-                for agent_obs in obs
-            )
-        else:
-            obs = self.observation_type_parking.observe()
-            success = self._is_success(obs["achieved_goal"], obs["desired_goal"])
-        info.update({"is_success": success})
-        return info
+    def _rewards(self, action: np.ndarray) -> dict[str, float]:
+        lateral_offset = 0.0
+        on_road = self.vehicle.on_road
+        if on_road and self.vehicle.lane: # Check if vehicle.lane is not None
+            _, lateral_offset = self.vehicle.lane.local_coordinates(self.vehicle.position)
+        
+        lane_centering_reward = 0.0
+        if on_road:
+             lane_centering_reward = 1 / (1 + self.config["lane_centering_cost"] * lateral_offset**2)
 
-    def _reset(self):
+        return {
+            "lane_centering_reward": lane_centering_reward,
+            "action_reward": np.linalg.norm(action),
+            "collision_reward": float(self.vehicle.crashed),
+            "on_road_reward": float(on_road),
+        }
+
+    def _is_terminated(self) -> bool:
+        terminated = self.vehicle.crashed
+        if self.config["offroad_terminal"] and not self.vehicle.on_road:
+            terminated = True
+        return terminated
+
+    def _is_truncated(self) -> bool:
+        return self.time >= self.config["duration"]
+
+    def _reset(self) -> None:
         self._create_road()
-        self._create_vehicles()
+        self._make_vehicles()
+        if not self.config["action"].get("longitudinal", True) and hasattr(self.vehicle, 'target_speed'):
+            # Set a default target speed from the middle of the available speeds
+            # Access target_speeds correctly from the 'action' sub-dictionary
+            num_speeds = len(self.config["action"]["target_speeds"]) # CORRECTED
+            if num_speeds > 0:
+                self.vehicle.target_speed = self.config["action"]["target_speeds"][num_speeds // 2] # CORRECTED
 
-    def _create_road(self, spots: int = 14) -> None:
+
+    def _create_road(self) -> None:
         """
-        Create a road composed of straight adjacent lanes.
-
-        :param spots: number of spots in the parking
+        Create a circular (ring-shaped) road.
         """
         net = RoadNetwork()
         width = 4.0
         c, s, n = LineType.CONTINUOUS, LineType.STRIPED, LineType.NONE
-        line_type = [[c, c], [c, n]]
+        line_type = [[c, c], [n, c]]
         x_offset = 10
         y_offset = 10
-        size = 100
-        gap = 15
-        length = [20]
+        size = 75
+        gap = 8
+        length = [10]
+        self._lane_ids = []
 
         # (0, 0) to (0, 1)
         net.add_lane(
@@ -165,6 +132,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("a", "b", 0))
         net.add_lane(
             "a",
             "b",
@@ -175,6 +143,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("a", "b", 1))
         net.add_lane(
             "a",
             "b",
@@ -185,6 +154,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("a", "b", 2))
         
         # (0, 1) to (1, 1)
         net.add_lane(
@@ -197,6 +167,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("b", "c", 0))
         net.add_lane(
             "b",
             "c",
@@ -207,6 +178,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("b", "c", 1))
         net.add_lane(
             "b",
             "c",
@@ -217,6 +189,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("b", "c", 2))
         net.add_lane(
             "b",
             "c",
@@ -227,6 +200,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("b", "c", 3))
         net.add_lane(
             "b",
             "c",
@@ -237,6 +211,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("b", "c", 4))
         net.add_lane(
             "b",
             "c",
@@ -247,6 +222,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("b", "c", 5))
         net.add_lane(
             "b",
             "c",
@@ -257,6 +233,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("b", "c", 6))
 
         # (1, 1) to (1, 0)
         net.add_lane(
@@ -269,6 +246,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("c", "d", 0))
         net.add_lane(
             "c",
             "d",
@@ -279,6 +257,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("c", "d", 1))
         net.add_lane(
             "c",
             "d",
@@ -289,6 +268,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("c", "d", 2))
 
         # (1, 0) to (0, 0)
         net.add_lane(
@@ -301,6 +281,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("d", "e", 0))
         net.add_lane(
             "d",
             "e",
@@ -311,16 +292,18 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("d", "e", 1))
         net.add_lane(
             "d",
             "e",
             StraightLane(
                 [x_offset + width * 2, y_offset + width],
-                [x_offset + width, y_offset + width],
+                [x_offset, y_offset + width],
                 width=width * 2,
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("d", "e", 2))
 
         # 倒車
         net.add_lane(
@@ -333,6 +316,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("e", "f", 0))
         net.add_lane(
             "e",
             "f",
@@ -343,6 +327,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("e", "f", 1))
 
         # 路邊停車
         net.add_lane(
@@ -355,6 +340,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[1]
             )
         )
+        self._lane_ids.append(("f", "g", 0))
         net.add_lane(
             "f",
             "g",
@@ -365,129 +351,63 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 line_types=line_type[0]
             )
         )
+        self._lane_ids.append(("f", "g", 1))
 
         self.road = Road(
             network=net,
             np_random=self.np_random,
-            record_history=self.config["show_trajectories"],
+            record_history=self.config.get("show_trajectories", False)
         )
 
-    def _create_vehicles(self) -> None:
-        """Create some new random vehicles of a given type, and add them on the road."""
-        empty_spots = list(self.road.network.lanes_dict().keys())
-
-        # Controlled vehicles
+    def _make_vehicles(self) -> None:
+        """
+        Populate the square track with vehicles.
+        """
+        rng = self.np_random
+        
         self.controlled_vehicles = []
         for i in range(self.config["controlled_vehicles"]):
-            x0 = (i - self.config["controlled_vehicles"] // 2) * 10
-            vehicle = self.action_type.vehicle_class(
-                self.road, [x0, 0], 2 * np.pi * self.np_random.uniform(), 0
+            chosen_lane_id_tuple = self._lane_ids[1]
+
+            initial_speed = 0
+            # Access target_speeds correctly from the 'action' sub-dictionary
+            num_speeds = len(self.config["action"]["target_speeds"]) # CORRECTED
+            if num_speeds > 0:
+                initial_speed = self.config["action"]["target_speeds"][num_speeds // 2] # CORRECTED
+            
+            lane_object = self.road.network.get_lane(chosen_lane_id_tuple)
+            initial_longitudinal = rng.uniform(low=lane_object.length * 0.05, high=lane_object.length * 0.2)
+            
+            controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
+                self.road,
+                lane_index=chosen_lane_id_tuple,
+                speed=initial_speed,
+                longitudinal=initial_longitudinal 
             )
-            vehicle.color = VehicleGraphics.EGO_COLOR
-            self.road.vehicles.append(vehicle)
-            self.controlled_vehicles.append(vehicle)
-            empty_spots.remove(vehicle.lane_index)
+            
+            self.controlled_vehicles.append(controlled_vehicle)
+            self.road.vehicles.append(controlled_vehicle)
+            
+            if i == 0:
+                self.vehicle = controlled_vehicle
+    
+    def _info(self, obs, action) -> dict:
+        info = {
+            "speed": self.vehicle.speed,
+            "crashed": self.vehicle.crashed,
+            "on_road": self.vehicle.on_road,
+            "action": action,
+        }
+        if hasattr(self.vehicle, 'lane_index') and self.vehicle.lane_index is not None:
+            info["lane_index"] = self.vehicle.lane_index
+        if hasattr(self.vehicle, 'lane') and self.vehicle.lane is not None:
+             _, lateral = self.vehicle.lane.local_coordinates(self.vehicle.position)
+             info["lateral_offset"] = lateral
+        else:
+            info["lateral_offset"] = "N/A (off-lane or no lane)"
+        return info
 
-        # Goal
-        for vehicle in self.controlled_vehicles:
-            lane_index = empty_spots[self.np_random.choice(np.arange(len(empty_spots)))]
-            lane = self.road.network.get_lane(lane_index)
-            vehicle.goal = Landmark(
-                self.road, lane.position(lane.length / 2, 0), heading=lane.heading
-            )
-            self.road.objects.append(vehicle.goal)
-            empty_spots.remove(lane_index)
-
-        # Other vehicles
-        for i in range(self.config["vehicles_count"]):
-            if not empty_spots:
-                continue
-            lane_index = empty_spots[self.np_random.choice(np.arange(len(empty_spots)))]
-            v = Vehicle.make_on_lane(self.road, lane_index, 4, speed=0)
-            self.road.vehicles.append(v)
-            empty_spots.remove(lane_index)
-
-        # Walls
-        if self.config["add_walls"]:
-            width, height = 70, 42
-            for y in [-height / 2, height / 2]:
-                obstacle = Obstacle(self.road, [0, y])
-                obstacle.LENGTH, obstacle.WIDTH = (width, 1)
-                obstacle.diagonal = np.sqrt(obstacle.LENGTH**2 + obstacle.WIDTH**2)
-                self.road.objects.append(obstacle)
-            for x in [-width / 2, width / 2]:
-                obstacle = Obstacle(self.road, [x, 0], heading=np.pi / 2)
-                obstacle.LENGTH, obstacle.WIDTH = (height, 1)
-                obstacle.diagonal = np.sqrt(obstacle.LENGTH**2 + obstacle.WIDTH**2)
-                self.road.objects.append(obstacle)
-
-    def compute_reward(
-        self,
-        achieved_goal: np.ndarray,
-        desired_goal: np.ndarray,
-        info: dict,
-        p: float = 0.5,
-    ) -> float:
-        """
-        Proximity to the goal is rewarded
-
-        We use a weighted p-norm
-
-        :param achieved_goal: the goal that was achieved
-        :param desired_goal: the goal that was desired
-        :param dict info: any supplementary information
-        :param p: the Lp^p norm used in the reward. Use p<1 to have high kurtosis for rewards in [0, 1]
-        :return: the corresponding reward
-        """
-        return -np.power(
-            np.dot(
-                np.abs(achieved_goal - desired_goal),
-                np.array(self.config["reward_weights"]),
-            ),
-            p,
-        )
-
-    def _reward(self, action: np.ndarray) -> float:
-        obs = self.observation_type_parking.observe()
-        obs = obs if isinstance(obs, tuple) else (obs,)
-        reward = sum(
-            self.compute_reward(
-                agent_obs["achieved_goal"], agent_obs["desired_goal"], {}
-            )
-            for agent_obs in obs
-        )
-        reward += self.config["collision_reward"] * sum(
-            v.crashed for v in self.controlled_vehicles
-        )
-        return reward
-
-    def _is_success(self, achieved_goal: np.ndarray, desired_goal: np.ndarray) -> bool:
-        return (
-            self.compute_reward(achieved_goal, desired_goal, {})
-            > -self.config["success_goal_reward"]
-        )
-
-    def _is_terminated(self) -> bool:
-        """The episode is over if the ego vehicle crashed or the goal is reached or time is over."""
-        crashed = any(vehicle.crashed for vehicle in self.controlled_vehicles)
-        obs = self.observation_type_parking.observe()
-        obs = obs if isinstance(obs, tuple) else (obs,)
-        success = all(
-            self._is_success(agent_obs["achieved_goal"], agent_obs["desired_goal"])
-            for agent_obs in obs
-        )
-        return bool(crashed or success)
-
-    def _is_truncated(self) -> bool:
-        """The episode is truncated if the time is over."""
-        return self.time >= self.config["duration"]
-
-
-class ParkingEnvActionRepeat(ParkingEnv):
-    def __init__(self):
-        super().__init__({"policy_frequency": 1, "duration": 20})
-
-
-class ParkingEnvParkedVehicles(ParkingEnv):
-    def __init__(self):
-        super().__init__({"vehicles_count": 10})
+register(
+    id="Racetrack-v0", 
+    entry_point="racetrack_env:RacetrackEnv",
+)

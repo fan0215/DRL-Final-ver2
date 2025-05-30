@@ -11,7 +11,7 @@ from gymnasium.envs.registration import register
 from highway_env.road.lane import CircularLane, LineType
 
 
-class RacetrackEnv(AbstractEnv):
+class DrivingClassEnv(AbstractEnv):
     """
     A continuous control environment.
     The agent needs to learn two skills:
@@ -46,7 +46,7 @@ class RacetrackEnv(AbstractEnv):
                 "lane_centering_reward": 1.0,
                 "action_reward": -0.3,
                 "controlled_vehicles": 1,
-                "other_vehicles": 3,
+                "other_vehicles": 0,
                 "screen_width": 1200,
                 "screen_height": 900,
                 "centering_position": [0.5, 0.5],
@@ -415,6 +415,6 @@ class RacetrackEnv(AbstractEnv):
         return info
 
 register(
-    id="Racetrack-v0", 
-    entry_point="racetrack_env:RacetrackEnv",
+    id="DrivingClass-v0", 
+    entry_point="driving_class:DrivingClassEnv",
 )

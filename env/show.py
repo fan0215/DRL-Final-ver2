@@ -1,9 +1,9 @@
 import gymnasium as gym
 from stable_baselines3 import PPO
-import racetrack_env
+import driving_class
 
-env = gym.make("Racetrack-v0", render_mode="human")
-model = PPO.load("ppo_racetrack")
+env = gym.make("DrivingClass-v0", render_mode="human")
+model = PPO.load("ppo_driving_class")
 
 obs, info = env.reset()
 terminated, truncated = False, False

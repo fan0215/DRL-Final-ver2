@@ -37,7 +37,7 @@ class RacetrackEnv(AbstractEnv):
                     "type": "ContinuousAction",
                     "longitudinal": False,
                     "lateral": True,
-                    "target_speeds": [0, 5, 10], # This is where target_speeds is defined
+                    "target_speeds": [-10, -5, 0, 5, 10], # This is where target_speeds is defined
                 },
                 "simulation_frequency": 15,
                 "policy_frequency": 5,
@@ -46,20 +46,26 @@ class RacetrackEnv(AbstractEnv):
                 "lane_centering_cost": 4,
                 "lane_centering_reward": 1.0,
                 "action_reward": -0.3,
+                "checkpoint_reward": 10.0,
+                "checkpoint_radius": 5.0,
+                "success_goal_reward": 50,
                 "controlled_vehicles": 1,
                 "other_vehicles": 3,
                 "screen_width": 600,
                 "screen_height": 600,
                 "centering_position": [0.5, 0.5],
-                "scaling": 2.0,
+                "scaling": 5.0,
                 "speed_limit": 10.0,
                 "track_side_length": 30.0,
                 "lane_width": 4.0,
                 "show_trajectories": False,
                 "offroad_terminal": True, # Terminate if vehicle goes off-road
+                "steering_range": np.deg2rad(45),
             }
         )
         return config
+
+    
 
     def _reward(self, action: np.ndarray) -> float:
         rewards = self._rewards(action)
@@ -127,48 +133,15 @@ class RacetrackEnv(AbstractEnv):
             "a",
             "b",
             StraightLane(
-                [x_offset + width, y_offset],
-                [x_offset + width, y_offset + width * 2],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("a", "b", 0))
-        net.add_lane(
-            "a",
-            "b",
-            StraightLane(
                 [x_offset + width, y_offset + width * 2],
                 [x_offset + width, y_offset + width * 2 + size],
                 width=width * 2,
                 line_types=line_type[0]
             )
         )
-        self._lane_ids.append(("a", "b", 1))
-        net.add_lane(
-            "a",
-            "b",
-            StraightLane(
-                [x_offset + width, y_offset + width * 2 + size],
-                [x_offset + width, y_offset + width * 4 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("a", "b", 2))
+        self._lane_ids.append(("a", "b", 0))
         
         # (0, 1) to (1, 1)
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset, y_offset + width * 3 + size],
-                [x_offset + width * 2, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("b", "c", 0))
         net.add_lane(
             "b",
             "c",
@@ -176,6 +149,17 @@ class RacetrackEnv(AbstractEnv):
                 [x_offset + width * 2, y_offset + width * 3 + size],
                 [x_offset + width * 2 + gap, y_offset + width * 3 + size],
                 width=width * 2,
+                line_types=line_type[0]
+            )
+        )
+        self._lane_ids.append(("b", "c", 0))
+        net.add_lane(
+            "b",
+            "c",
+            StraightLane(
+                [x_offset + width * 2 + gap, y_offset + width * 2 + size + width * 2 - (width * 2 + length[0]) / 2],
+                [x_offset + width * 2 + gap + width * 2, y_offset + width * 2 + size + width * 2 - (width * 2 + length[0]) / 2],
+                width=width * 2 + length[0],
                 line_types=line_type[0]
             )
         )
@@ -184,10 +168,10 @@ class RacetrackEnv(AbstractEnv):
             "b",
             "c",
             StraightLane(
-                [x_offset + width * 2 + gap, y_offset + width * 3 + size],
                 [x_offset + width * 2 + gap + width * 2, y_offset + width * 3 + size],
+                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 3 + size],
                 width=width * 2,
-                line_types=line_type[1]
+                line_types=line_type[0]
             )
         )
         self._lane_ids.append(("b", "c", 2))
@@ -195,9 +179,9 @@ class RacetrackEnv(AbstractEnv):
             "b",
             "c",
             StraightLane(
-                [x_offset + width * 2 + gap + width * 2, y_offset + width * 3 + size],
-                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 3 + size],
-                width=width * 2,
+                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 2 + size],
+                [x_offset + width * 2 + gap + width * 2 + gap + length[0], y_offset + width * 2 + size],
+                width=width * 4,
                 line_types=line_type[0]
             )
         )
@@ -206,105 +190,39 @@ class RacetrackEnv(AbstractEnv):
             "b",
             "c",
             StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 3 + size],
-                [x_offset + width * 2 + gap + width * 2 + gap + length[0], y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("b", "c", 4))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
                 [x_offset + width * 2 + gap + width * 2 + gap + length[0], y_offset + width * 3 + size],
                 [x_offset + width * 2 + size, y_offset + width * 3 + size],
                 width=width * 2,
                 line_types=line_type[0]
             )
         )
-        self._lane_ids.append(("b", "c", 5))
-        net.add_lane(
-            "b",
-            "c",
-            StraightLane(
-                [x_offset + width * 2 + size, y_offset + width * 3 + size],
-                [x_offset + width * 4 + size, y_offset + width * 3 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("b", "c", 6))
+        self._lane_ids.append(("b", "c", 4))
 
         # (1, 1) to (1, 0)
         net.add_lane(
             "c",
             "d",
             StraightLane(
-                [x_offset + width * 3 + size, y_offset + width * 4 + size],
-                [x_offset + width * 3 + size, y_offset + width * 2 + size],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("c", "d", 0))
-        net.add_lane(
-            "c",
-            "d",
-            StraightLane(
                 [x_offset + width * 3 + size, y_offset + width * 2 + size],
                 [x_offset + width * 3 + size, y_offset + width * 2],
                 width=width * 2,
                 line_types=line_type[0]
             )
         )
-        self._lane_ids.append(("c", "d", 1))
-        net.add_lane(
-            "c",
-            "d",
-            StraightLane(
-                [x_offset + width * 3 + size, y_offset + width * 2],
-                [x_offset + width * 3 + size, y_offset],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("c", "d", 2))
+        self._lane_ids.append(("c", "d", 0))
 
         # (1, 0) to (0, 0)
         net.add_lane(
             "d",
             "e",
             StraightLane(
-                [x_offset + width * 4 + size, y_offset + width],
-                [x_offset + width * 2 + size, y_offset + width],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("d", "e", 0))
-        net.add_lane(
-            "d",
-            "e",
-            StraightLane(
                 [x_offset + width * 2 + size, y_offset + width],
                 [x_offset + width * 2, y_offset + width],
                 width=width * 2,
                 line_types=line_type[0]
             )
         )
-        self._lane_ids.append(("d", "e", 1))
-        net.add_lane(
-            "d",
-            "e",
-            StraightLane(
-                [x_offset + width * 2, y_offset + width],
-                [x_offset, y_offset + width],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("d", "e", 2))
+        self._lane_ids.append(("d", "e", 0))
 
         # 倒車
         net.add_lane(
@@ -318,30 +236,8 @@ class RacetrackEnv(AbstractEnv):
             )
         )
         self._lane_ids.append(("e", "f", 0))
-        net.add_lane(
-            "e",
-            "f",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2, y_offset + width * 2 + size - length[0] + (width * 2 + length[0]) / 2],
-                [x_offset + width * 2 + gap, y_offset + width * 2 + size - length[0] + (width * 2 + length[0]) / 2],
-                width=width * 2 + length[0],
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("e", "f", 1))
 
         # 路邊停車
-        net.add_lane(
-            "f",
-            "g",
-            StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap + length[0], y_offset + width * 2 + size - width],
-                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 2 + size - width],
-                width=width * 2,
-                line_types=line_type[1]
-            )
-        )
-        self._lane_ids.append(("f", "g", 0))
         net.add_lane(
             "f",
             "g",
@@ -352,7 +248,53 @@ class RacetrackEnv(AbstractEnv):
                 line_types=line_type[0]
             )
         )
-        self._lane_ids.append(("f", "g", 1))
+        self._lane_ids.append(("f", "g", 0))
+
+        # corner
+        net.add_lane(
+            "g",
+            "h",
+            StraightLane(
+                [x_offset, y_offset + width * 2 + size / 2],
+                [x_offset + width * 2, y_offset + width * 2 + size / 2],
+                width=width * 4 + size,
+                line_types=line_type[0]
+            )
+        )
+        self._lane_ids.append(("g", "h", 0))
+        net.add_lane(
+            "g",
+            "h",
+            StraightLane(
+                [x_offset + width * 2 + size, y_offset + width * 2 + size / 2],
+                [x_offset + width * 4 + size, y_offset + width * 2 + size / 2],
+                width=width * 4 + size,
+                line_types=line_type[0]
+            )
+        )
+        self._lane_ids.append(("g", "h", 1))
+        net.add_lane(
+            "g",
+            "h",
+            StraightLane(
+                [x_offset + width * 2 + size / 2, y_offset],
+                [x_offset + width * 2 + size / 2, y_offset + width * 2],
+                width=width * 4 + size,
+                line_types=line_type[0]
+            )
+        )
+        self._lane_ids.append(("g", "h", 2))
+        net.add_lane(
+            "g",
+            "h",
+            StraightLane(
+                [x_offset + width * 2 + size / 2, y_offset + width * 2 + size],
+                [x_offset + width * 2 + size / 2, y_offset + width * 4 + size],
+                width=width * 4 + size,
+                line_types=line_type[0]
+            )
+        )
+        self._lane_ids.append(("g", "h", 3))
 
         self.road = Road(
             network=net,
@@ -373,7 +315,7 @@ class RacetrackEnv(AbstractEnv):
             initial_speed = 0
             num_speeds = len(self.config["action"]["target_speeds"])
             if num_speeds > 0:
-                initial_speed = self.config["action"]["target_speeds"][num_speeds // 2]
+                initial_speed = self.config["action"]["target_speeds"][num_speeds // 2 + 1]
             
             lane_object = self.road.network.get_lane(chosen_lane_id_tuple)
             initial_longitudinal = rng.uniform(low=lane_object.length * 0.05, high=lane_object.length * 0.2)
@@ -391,6 +333,7 @@ class RacetrackEnv(AbstractEnv):
             if i == 0:
                 self.vehicle = controlled_vehicle
 
+        # Goal
         for vehicle in self.controlled_vehicles:
             lane_id = ("a", "b", 1)
             lane = self.road.network.get_lane(lane_id)

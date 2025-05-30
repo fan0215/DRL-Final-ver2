@@ -9,6 +9,7 @@ from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.behavior import IDMVehicle
 from gymnasium.envs.registration import register
 from highway_env.road.lane import CircularLane, LineType
+from highway_env.vehicle.objects import Landmark, Obstacle
 
 
 class RacetrackEnv(AbstractEnv):
@@ -50,7 +51,7 @@ class RacetrackEnv(AbstractEnv):
                 "screen_width": 600,
                 "screen_height": 600,
                 "centering_position": [0.5, 0.5],
-                "scaling": 7.0,
+                "scaling": 2.0,
                 "speed_limit": 10.0,
                 "track_side_length": 30.0,
                 "lane_width": 4.0,
@@ -321,10 +322,10 @@ class RacetrackEnv(AbstractEnv):
             "e",
             "f",
             StraightLane(
-                [x_offset + width * 2 + gap, y_offset + width * 2 + size - length[0] + (width * 2 + length[0]) / 2],
                 [x_offset + width * 2 + gap + width * 2, y_offset + width * 2 + size - length[0] + (width * 2 + length[0]) / 2],
+                [x_offset + width * 2 + gap, y_offset + width * 2 + size - length[0] + (width * 2 + length[0]) / 2],
                 width=width * 2 + length[0],
-                line_types=line_type[0]
+                line_types=line_type[1]
             )
         )
         self._lane_ids.append(("e", "f", 1))
@@ -370,10 +371,9 @@ class RacetrackEnv(AbstractEnv):
             chosen_lane_id_tuple = self._lane_ids[1]
 
             initial_speed = 0
-            # Access target_speeds correctly from the 'action' sub-dictionary
-            num_speeds = len(self.config["action"]["target_speeds"]) # CORRECTED
+            num_speeds = len(self.config["action"]["target_speeds"])
             if num_speeds > 0:
-                initial_speed = self.config["action"]["target_speeds"][num_speeds // 2] # CORRECTED
+                initial_speed = self.config["action"]["target_speeds"][num_speeds // 2]
             
             lane_object = self.road.network.get_lane(chosen_lane_id_tuple)
             initial_longitudinal = rng.uniform(low=lane_object.length * 0.05, high=lane_object.length * 0.2)
@@ -390,6 +390,28 @@ class RacetrackEnv(AbstractEnv):
             
             if i == 0:
                 self.vehicle = controlled_vehicle
+
+        for vehicle in self.controlled_vehicles:
+            lane_id = ("a", "b", 1)
+            lane = self.road.network.get_lane(lane_id)
+            vehicle.goal = Landmark(
+                self.road, lane.position(lane.length - 5, 0), heading=lane.heading
+            )
+            self.road.objects.append(vehicle.goal)
+
+            lane_id = ("e", "f", 0)
+            lane = self.road.network.get_lane(lane_id)
+            vehicle.goal = Landmark(
+                self.road, lane.position(lane.length / 2, 0), heading=lane.heading
+            )
+            self.road.objects.append(vehicle.goal)
+
+            lane_id = ("f", "g", 0)
+            lane = self.road.network.get_lane(lane_id)
+            vehicle.goal = Landmark(
+                self.road, lane.position(lane.length / 2, 0), heading=lane.heading
+            )
+            self.road.objects.append(vehicle.goal)
     
     def _info(self, obs, action) -> dict:
         info = {

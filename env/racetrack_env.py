@@ -47,13 +47,13 @@ class RacetrackEnv(AbstractEnv):
                 "action_reward": -0.3,
                 "controlled_vehicles": 1,
                 "other_vehicles": 3,
-                "screen_width": 600,
-                "screen_height": 600,
+                "screen_width": 1600,
+                "screen_height": 900,
                 "centering_position": [0.5, 0.5],
-                "scaling": 7.0,
+                "scaling": 5.0,
                 "speed_limit": 10.0,
                 "track_side_length": 30.0,
-                "lane_width": 4.0,
+                "lane_width": 8.0,
                 "show_trajectories": False,
                 "offroad_terminal": True, # Terminate if vehicle goes off-road
             }
@@ -111,22 +111,21 @@ class RacetrackEnv(AbstractEnv):
         Create a circular (ring-shaped) road.
         """
         net = RoadNetwork()
-        lane_width = 10
+        lane_width = self.config["lane_width"]
         side_length = self.config["track_side_length"]
-        radius = 200
+        radius = 100
 
         center = np.array([0, 0])
 
         lane = CircularLane(
             center=center,
             radius=radius,
-            start_phase=0,        # 從0度起始
-            end_phase=2 * np.pi,  # 到360度結束
+            start_phase=0,        
+            end_phase=2 * np.pi,  
             width=lane_width,
             line_types=[LineType.CONTINUOUS, LineType.CONTINUOUS],
             speed_limit=self.config["speed_limit"]
         )
-        # 範例只用一個lane_id
         net.add_lane("circle", "circle", lane)
         self._lane_ids = [("circle", "circle", 0)]
 
@@ -154,7 +153,7 @@ class RacetrackEnv(AbstractEnv):
                 initial_speed = self.config["action"]["target_speeds"][num_speeds // 2] # CORRECTED
             
             lane_object = self.road.network.get_lane(chosen_lane_id_tuple)
-            initial_longitudinal = rng.uniform(low=lane_object.length * 0.05, high=lane_object.length * 0.2)
+            initial_longitudinal = 0.0
             
             controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
                 self.road,

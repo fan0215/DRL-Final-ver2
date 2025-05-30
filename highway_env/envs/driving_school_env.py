@@ -102,7 +102,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
                 "policy_frequency": 5,
                 "duration": 100,
                 "screen_width": 600,
-                "screen_height": 300,
+                "screen_height": 600,
                 "centering_position": [0.5, 0.5],
                 "scaling": 7,
                 "controlled_vehicles": 1,

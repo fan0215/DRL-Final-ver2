@@ -8,6 +8,7 @@ from highway_env.road.lane import LineType, StraightLane
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.behavior import IDMVehicle
 from gymnasium.envs.registration import register
+from highway_env.road.lane import CircularLane, LineType
 
 
 class RacetrackEnv(AbstractEnv):
@@ -107,44 +108,32 @@ class RacetrackEnv(AbstractEnv):
 
     def _create_road(self) -> None:
         """
-        Create a '回字形' (square loop) road.
+        Create a circular (ring-shaped) road.
         """
         net = RoadNetwork()
         lane_width = self.config["lane_width"]
         side_length = self.config["track_side_length"]
+        radius = 200
 
-        L = side_length / 2
-        pts = [
-            np.array([-L, -L]),  # Node 0 (Bottom-Left)
-            np.array([ L, -L]),  # Node 1 (Bottom-Right)
-            np.array([ L,  L]),  # Node 2 (Top-Right)
-            np.array([-L,  L])   # Node 3 (Top-Left)
-        ]
-        
-        self._lane_ids = []
+        center = np.array([0, 0])
 
-        for i in range(4):
-            from_node_name = f"n{i}"
-            to_node_name = f"n{(i + 1) % 4}"
-            start_coord = pts[i]
-            end_coord = pts[(i + 1) % 4]
-            
-            lane_vector = end_coord - start_coord
-            
-            lane = StraightLane(
-                start_coord,
-                end_coord,
-                width=lane_width,
-                line_types=[LineType.CONTINUOUS, LineType.CONTINUOUS],
-                speed_limit=self.config["speed_limit"]
-            )
-            net.add_lane(from_node_name, to_node_name, lane)
-            self._lane_ids.append((from_node_name, to_node_name, 0))
+        lane = CircularLane(
+            center=center,
+            radius=radius,
+            start_phase=0,        # 從0度起始
+            end_phase=2 * np.pi,  # 到360度結束
+            width=lane_width,
+            line_types=[LineType.CONTINUOUS, LineType.CONTINUOUS],
+            speed_limit=self.config["speed_limit"]
+        )
+        # 範例只用一個lane_id
+        net.add_lane("circle", "circle", lane)
+        self._lane_ids = [("circle", "circle", 0)]
 
         self.road = Road(
             network=net,
             np_random=self.np_random,
-            record_history=self.config["show_trajectories"]
+            record_history=self.config.get("show_trajectories", False)
         )
 
     def _make_vehicles(self) -> None:

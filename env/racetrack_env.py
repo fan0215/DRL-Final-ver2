@@ -133,7 +133,7 @@ class RacetrackEnv(AbstractEnv):
             
             lane = StraightLane(
                 start_coord,
-                lane_vector,
+                end_coord,
                 width=lane_width,
                 line_types=[LineType.CONTINUOUS, LineType.CONTINUOUS],
                 speed_limit=self.config["speed_limit"]

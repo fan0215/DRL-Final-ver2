@@ -104,12 +104,17 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "screen_height": 900,
                 "centering_position": [0.3, 0.6], "scaling": 3.5, 
                 "lane_width": 4.0, 
-                "show_trajectories": False, "offroad_terminal": True,
-                "x_offset": 0, "y_offset": 0,
+                "show_trajectories": False, 
+                "offroad_terminal": True,
+                "x_offset": 0, 
+                "y_offset": 0,
                 "road_segment_size": 80, "road_segment_gap": 8,
                 "road_extra_length": [10], "start_lane_index": 1,
-                "add_lane_edge_obstacles": True,
-                "lane_edge_obstacle_width": 0.1,
+                # "manual_control": True,
+                # "real_time_rendering": True,
+
+                # "add_lane_edge_obstacles": True,
+                # "lane_edge_obstacle_width": 0.1,
             }
         )
         return config
@@ -381,8 +386,8 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
 
         # Segment 5: (e -> f) "Reversing Bay" - 倒車 (This is the default goal lane)
         net.add_lane("e","f",StraightLane(
-                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size], # Start
                 [x_offset + width * 2 + gap + width, y_offset + width * 2 + size - extra_len_val], # End (shorter)
+                [x_offset + width * 2 + gap + width, y_offset + width * 2 + size], # Start
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("e", "f", 0))
 
@@ -505,6 +510,7 @@ register(
 if __name__ == "__main__":
     # Test the environment
     env = gym.make("DrivingClass-v0", render_mode="human")
+
 
     print(f"--- {env.spec.id if env.spec else 'DrivingClass-v0'} (Tuple Lidar + Goal) Test ---")
     print(f"Observation space: {env.observation_space}")

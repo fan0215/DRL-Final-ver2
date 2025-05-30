@@ -111,7 +111,7 @@ class RacetrackEnv(AbstractEnv):
         Create a circular (ring-shaped) road.
         """
         net = RoadNetwork()
-        lane_width = self.config["lane_width"]
+        lane_width = 10
         side_length = self.config["track_side_length"]
         radius = 200
 

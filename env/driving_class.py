@@ -169,7 +169,8 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
             # This check might be problematic if achieved_goal has different length than goal_features due to config
             # However, KinematicsGoalObservation should ensure they match goal_features length.
             # print("Warning: Mismatch in reward_weights length. Using unweighted norm.")
-            return -np.power(np.linalg.norm(achieved_goal - desired_goal, ord=int(p)), p)
+            return -np.power(np.linalg.norm(achieved_goal - desired_goal, ord=p, axis=-1), p)
+
         
         return -np.power(
             np.dot(np.abs(achieved_goal - desired_goal), current_reward_weights), p)

@@ -251,6 +251,9 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         truncated = self._is_truncated()
         obs_for_next_step = self.observation_type.observe()
         info = self._info(obs_for_next_step, action)
+        if self.render_mode == "human":
+            self.render()
+
         return obs_for_next_step, reward, terminated, truncated, info
 
     def _create_road(self) -> None:
@@ -426,7 +429,6 @@ if __name__ == "__main__":
                 print(f"  St {step_count:3d}, Act: {act_str}, Rew: {reward_val:7.3f}, "
                       f"Lidar Sum: {np.sum(lidar_data):6.2f}, LastGoalOK: {current_info.get('last_goal_attempt_success', False)}, "
                       f"TargetIdx: {current_info.get('current_target_goal_index', 0)}")
-            env.render()
             if terminated:
                 all_done_flag = current_info.get('all_goals_completed', False)
                 crashed_flag = not hasattr(env, "vehicle")

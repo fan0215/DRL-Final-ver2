@@ -65,26 +65,22 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                         {
                             "type": "LidarObservation",
                             "angle_range": [-np.pi, np.pi], # Full 360-degree Lidar
-                            "cells": 50,                     # Number of Lidar beams
+                            "cells": 30,                     # Number of Lidar beams
                             "max_distance": 30.0,            # Max Lidar distance (meters)
                             "normalize": True,               # Normalize Lidar distances to [0, 1]
                             "see_behind": True,              # Allow Lidar to see behind
-                            "gaussian_noise": 0.01,        # Optional: add noise (proportion of max_distance)
                         },
                         {
                             "type": "KinematicsGoal",
-                            "goal_features": ["x", "y", "cos_h", "sin_h"], 
-                            "goal_scales": [100, 100, 1, 1], # Scales for goal features
-                            "normalize_goal": False, # Whether to normalize achieved/desired goals
-                            "features": ["x", "y", "vx", "vy", "cos_h", "sin_h"], # Fallback/default for 'observation' field
-                            "scales": [100, 100, 10, 10, 1, 1],
-                            "normalize": False # Normalization for the wrapper itself if it were to use its own kinematics for 'observation'
+                            "features": ["x", "y", "cos_h", "sin_h", "vx", "vy"], # Fallback/default for 'observation' field
+                            "scales": [100, 100, 1, 1, 10, 10],
+                            "normalize": True# Normalization for the wrapper itself if it were to use its own kinematics for 'observation'
                         }
                     ],
                 },
                 "action": {
                     "type": "ContinuousAction", "longitudinal": True, "lateral": True,
-                    "acceleration_range": [-2, 3.5], "steering_range": [-np.pi / 3, np.pi / 3], 
+                    "acceleration_range": [-5, 5], "steering_range": [-np.pi / 3, np.pi / 3], 
                 },
                 "simulation_frequency": 15, 
                 "policy_frequency": 5, 
@@ -524,7 +520,7 @@ if __name__ == "__main__":
 
     print(f"Action space: {env.action_space}")
 
-    num_episodes = 3 # Number of episodes to run for testing
+    num_episodes = 1000 # Number of episodes to run for testing
     for episode in range(num_episodes):
         print(f"\n--- Episode {episode + 1}/{num_episodes} ---")
         # obs_tuple is (LidarScan_ndarray, KinematicsGoal_dict)

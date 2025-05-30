@@ -5,7 +5,9 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from rllte.xplore.reward import RND
 import torch as th
 import numpy as np
+from gymnasium import spaces
 import driving_class  # Triggers internal registration of DrivingClass-v0
+
 
 # Custom TensorBoard callback for logging intrinsic rewards
 class IntrinsicRewardCallback(BaseCallback):
@@ -84,6 +86,27 @@ class IntrinsicRewardEnv(gym.Wrapper):
         self.last_obs = obs
         return obs, total_reward, terminated, truncated, info
 
+class TupleToDictObsWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        lidar_space = env.observation_space.spaces[0]
+        kgo_space = env.observation_space.spaces[1]
+        self.observation_space = spaces.Dict({
+            "lidar": lidar_space,
+            "observation": kgo_space['observation'],
+            "achieved_goal": kgo_space['achieved_goal'],
+            "desired_goal": kgo_space['desired_goal'],
+        })
+
+    def observation(self, obs):
+        lidar, kgo = obs
+        return {
+            "lidar": lidar,
+            "observation": kgo["observation"],
+            "achieved_goal": kgo["achieved_goal"],
+            "desired_goal": kgo["desired_goal"],
+        }
+
 # Create environment
 try:
     env = gym.make("DrivingClass-v0", render_mode="human")
@@ -96,6 +119,7 @@ except Exception as e:
     exit(1)
 
 # Apply wrappers
+env = TupleToDictObsWrapper(env)
 env = FlattenDictWrapper(env)
 env = IntrinsicRewardEnv(env, intrinsic_module=None, intrinsic_weight=0.01)
 vec_env = DummyVecEnv([lambda: env])

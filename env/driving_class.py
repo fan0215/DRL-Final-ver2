@@ -94,8 +94,8 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "x_offset": 0, "y_offset": 0,
                 "road_segment_size": 80, "road_segment_gap": 8,
                 "road_extra_length": [10], "start_lane_index": 1,
-                "manual_control": True,
-                "real_time_rendering": True,
+                # "manual_control": True,
+                # "real_time_rendering": True,
 
             }
         )
@@ -123,8 +123,6 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
             goal_lane_object = self.road.network.get_lane(current_goal_config_tuple)
             long_offset_factor = np.clip(self.config["goal_longitudinal_offset"], 0.05, 0.95)
             goal_pos = goal_lane_object.position(goal_lane_object.length * long_offset_factor, 0)
-            print("Testttt!!!")
-            print(goal_lane_object.length * long_offset_factor)
             goal_head = goal_lane_object.heading_at(goal_lane_object.length * long_offset_factor)
             goal_pos[0] += self.np_random.normal(0, self.config["goal_position_noise_std"])
             goal_pos[1] += self.np_random.normal(0, self.config["goal_position_noise_std"])

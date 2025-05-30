@@ -105,13 +105,13 @@ class RacetrackEnv(AbstractEnv):
     def _reset(self) -> None:
         self._create_road()
         self._make_vehicles()
+        self._make_walls()
         if not self.config["action"].get("longitudinal", True) and hasattr(self.vehicle, 'target_speed'):
             # Set a default target speed from the middle of the available speeds
             # Access target_speeds correctly from the 'action' sub-dictionary
             num_speeds = len(self.config["action"]["target_speeds"]) # CORRECTED
             if num_speeds > 0:
                 self.vehicle.target_speed = self.config["action"]["target_speeds"][num_speeds // 2] # CORRECTED
-
 
     def _create_road(self) -> None:
         """
@@ -121,9 +121,9 @@ class RacetrackEnv(AbstractEnv):
         width = 4.0
         c, s, n = LineType.CONTINUOUS, LineType.STRIPED, LineType.NONE
         line_type = [[c, c], [n, c]]
-        x_offset = 10
-        y_offset = 10
-        size = 75
+        x_offset = 0
+        y_offset = 0
+        size = 80
         gap = 8
         length = [10]
         self._lane_ids = []
@@ -302,6 +302,42 @@ class RacetrackEnv(AbstractEnv):
             record_history=self.config.get("show_trajectories", False)
         )
 
+    def _make_walls(self) -> None:
+        size = 80
+        road_width = 8
+        gap = 8
+        length = 10
+
+        def create_wall(start, end):
+            point = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2]
+            if start[1] == end[1]:
+                obstacle = Obstacle(self.road, point)
+            else:
+                obstacle = Obstacle(self.road, point, heading=np.pi / 2)
+            obstacle.LENGTH = abs(end[0] - start[0]) + abs(end[1] - start[1])
+            obstacle.WIDTH = 1
+            obstacle.diagonal = np.sqrt(obstacle.LENGTH**2 + obstacle.WIDTH**2)
+            self.road.objects.append(obstacle)
+
+        create_wall([0, 0], [0, size + road_width * 2])
+        create_wall([0, size + road_width * 2], [size + road_width * 2, size + road_width * 2])
+        create_wall([size + road_width * 2, size + road_width * 2], [size + road_width * 2, 0])
+        create_wall([size + road_width * 2, 0], [0, 0])
+
+        create_wall([road_width, road_width], [road_width, size + road_width])
+        create_wall([size + road_width, size + road_width], [size + road_width, road_width])
+        create_wall([size + road_width, road_width], [road_width, road_width])
+
+        create_wall([road_width, size + road_width], [road_width + gap, size + road_width])
+        create_wall([road_width + gap, size + road_width], [road_width + gap, size + road_width - length])
+        create_wall([road_width + gap, size + road_width - length], [road_width * 2 + gap, size + road_width - length])
+        create_wall([road_width * 2 + gap, size + road_width - length], [road_width * 2 + gap, size + road_width])
+        create_wall([road_width * 2 + gap, size + road_width], [road_width * 2 + gap * 2, size + road_width])
+        create_wall([road_width * 2 + gap * 2, size + road_width], [road_width * 2 + gap * 2, size])
+        create_wall([road_width * 2 + gap * 2, size], [road_width * 2 + gap * 2 + length, size])
+        create_wall([road_width * 2 + gap * 2 + length, size], [road_width * 2 + gap * 2 + length, road_width + size])
+        create_wall([road_width * 2 + gap * 2 + length, road_width + size], [size + road_width, size + road_width])
+
     def _make_vehicles(self) -> None:
         """
         Populate the square track with vehicles.
@@ -310,7 +346,7 @@ class RacetrackEnv(AbstractEnv):
         
         self.controlled_vehicles = []
         for i in range(self.config["controlled_vehicles"]):
-            chosen_lane_id_tuple = self._lane_ids[1]
+            chosen_lane_id_tuple = self._lane_ids[0]
 
             initial_speed = 0
             num_speeds = len(self.config["action"]["target_speeds"])
@@ -335,7 +371,7 @@ class RacetrackEnv(AbstractEnv):
 
         # Goal
         for vehicle in self.controlled_vehicles:
-            lane_id = ("a", "b", 1)
+            lane_id = ("a", "b", 0)
             lane = self.road.network.get_lane(lane_id)
             vehicle.goal = Landmark(
                 self.road, lane.position(lane.length - 5, 0), heading=lane.heading

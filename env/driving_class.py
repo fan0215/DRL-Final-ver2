@@ -114,12 +114,13 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
             if self.vehicle: self.vehicle.goal = None
             return
 
+        if self.current_goal_index >= len(self.goal_sequence): return
+
         if self.goal_landmark and self.road and self.goal_landmark in self.road.objects:
             self.road.objects.remove(self.goal_landmark)
         self.goal_landmark = None
         if self.vehicle: self.vehicle.goal = None
 
-        if self.current_goal_index >= len(self.goal_sequence): return
 
         current_goal_config = self.goal_sequence[self.current_goal_index]
         current_goal_config_tuple = current_goal_config["lane_tuple"]
@@ -218,6 +219,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                     total_reward += self.config.get("final_goal_completion_reward", self.config["intermediate_goal_reward"])
                 else:
                     total_reward += self.config["intermediate_goal_reward"]
+
                 self.current_goal_index += 1
                 self._set_destination()
         

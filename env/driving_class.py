@@ -84,10 +84,14 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "lane_centering_cost_factor": 4,
                 "controlled_vehicles": 1, "other_vehicles": 0,
                 "goal_sequence": [
-                    {"lane_tuple": ("b", "c", 2), "target_heading_rad": None},          # Goal 1
+                    {"lane_tuple": ("b", "c", 2), "target_heading_rad": 0},          # Goal 1
                     {"lane_tuple": ("e", "f", 0), "target_heading_rad": np.pi / 2},       # Goal 2 (Reversing bay, face West)
                     {"lane_tuple": ("b", "c", 2), "target_heading_rad": None},          # Goal 3
-                    {"lane_tuple": ("f", "g", 0), "target_heading_rad": 0}    # Goal 4 (Parking, face South)
+                    {"lane_tuple": ("f", "g", 0), "target_heading_rad": 0},    # Goal 4 (Parking, face South)
+                    {"lane_tuple": ("c", "d", 0), "target_heading_rad": np.pi / 2 * 3},
+                    {"lane_tuple": ("d", "e", 0), "target_heading_rad": np.pi},
+                    {"lane_tuple": ("a", "b", 0), "target_heading_rad": np.pi / 2},
+                    {"lane_tuple": ("b", "c", 2), "target_heading_rad": 0}
                 ],
                 "intermediate_goal_reward": 75.0,
                 "final_goal_completion_reward": 150.0,
@@ -100,8 +104,8 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "road_segment_size": 80, "road_segment_gap": 15,
                 "road_extra_length": [20], "start_lane_index": 1,
                 "street_parking_width": 8.0,
-                # "manual_control": True,
-                # "real_time_rendering": True,
+                "manual_control": True,
+                "real_time_rendering": True,
 
             }
         )

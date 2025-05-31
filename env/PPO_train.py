@@ -1,6 +1,7 @@
 import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.callbacks import CheckpointCallback
 from gymnasium import spaces
 
 import driving_class
@@ -26,20 +27,28 @@ class TupleToDictObsWrapper(gym.ObservationWrapper):
         }
 
 env_id = "DrivingClass-v0"
-env = gym.make(env_id, render_mode="human")
+# env = gym.make(env_id, render_mode="human")
+env = gym.make(env_id)
 env = TupleToDictObsWrapper(env)
 # check_env(env, warn=True)
+
+total_timesteps = int(3e6)
+save_step = int(1e5)
+current_step = 0
+
+checkpoint_callback = CheckpointCallback(
+    save_freq=save_step,
+    save_path='./ppo_new',
+    name_prefix='ppo_model'
+)
 
 model = PPO(
     "MultiInputPolicy",    
     env,
-    verbose=1,      
-    tensorboard_log="./ppo_driving_class_tensorboard/"
+    tensorboard_log='./ppo_new/tensorboard',
+    verbose=1
 )
 
-total_timesteps = 100_000   
-model.learn(total_timesteps=total_timesteps)
-
-model.save("ppo_driving_class")
+model.learn(total_timesteps=total_timesteps, callback=checkpoint_callback)
 
 env.close()

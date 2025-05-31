@@ -2,6 +2,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3 import DDPG, HerReplayBuffer
 from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.callbacks import CheckpointCallback
 import numpy as np
 import driving_class
 
@@ -47,9 +48,19 @@ class TupleToDictObsWrapper(gym.ObservationWrapper):
         }
 
 def make_env():
-    env = gym.make("DrivingClass-v0", render_mode="human")
+    env = gym.make("DrivingClass-v0")
     env = TupleToDictObsWrapper(env)
     return env
+
+total_timesteps = int(3e6)
+save_step = int(1e5)
+current_step = 0
+
+checkpoint_callback = CheckpointCallback(
+    save_freq=save_step,
+    save_path='./ddpg_new',
+    name_prefix='ddpg_model'
+)
 
 if __name__ == "__main__":
     env = DummyVecEnv([make_env])
@@ -67,11 +78,9 @@ if __name__ == "__main__":
         learning_rate=1e-3,
         buffer_size=200_000,
         learning_starts=3000,     
-        tensorboard_log="./ddpg_her_tensorboard/"
+        tensorboard_log="ddpg_new/tensorboard"
     )
 
-
-    model.learn(total_timesteps=500_000)
-    model.save("ddpg_her_driving_class")
+    model.learn(total_timesteps=total_timesteps, callback=checkpoint_callback)
 
     print("Training complete. Model saved as 'ddpg_her_driving_class'.")

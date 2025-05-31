@@ -1,13 +1,13 @@
 import gymnasium as gym
 from stable_baselines3 import SAC, HerReplayBuffer
 from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import CheckpointCallback
 from gymnasium import spaces
 import os
 
 import driving_class  # 這行要根據你的環境模組來寫
 
-log_dir = "./her_sac_tensorboard/"
+log_dir = "./sac_new/tensorboard"
 os.makedirs(log_dir, exist_ok=True)
 class TupleToDictObsWrapper(gym.ObservationWrapper):
     def __init__(self, env):
@@ -31,28 +31,21 @@ class TupleToDictObsWrapper(gym.ObservationWrapper):
         }
 
 def make_env():
-    env = gym.make("DrivingClass-v0", render_mode="human")
+    env = gym.make("DrivingClass-v0")
     env = TupleToDictObsWrapper(env)
     return env
 
 vec_env = DummyVecEnv([make_env])
 
-class RewardLoggerCallback(BaseCallback):
-    def __init__(self, verbose=0):
-        super().__init__(verbose)
-        self.episode_rewards = []
+total_timesteps = int(3e6)
+save_step = int(1e5)
+current_step = 0
 
-    def _on_step(self) -> bool:
-        # DummyVecEnv: infos 是一個 list
-        for info in self.locals["infos"]:
-            if "episode" in info:
-                ep_rew = info["episode"]["r"]
-                self.episode_rewards.append(ep_rew)
-                # log 到 TensorBoard 的 custom/ep_reward
-                self.logger.record("custom/ep_reward", ep_rew)
-        return True
-
-reward_callback = RewardLoggerCallback()
+checkpoint_callback = CheckpointCallback(
+    save_freq=save_step,
+    save_path='./sac_new',
+    name_prefix='sac_model'
+)
 
 model = SAC(
     policy="MultiInputPolicy",            
@@ -68,8 +61,7 @@ model = SAC(
     learning_rate=3e-4,    
 )
 
-model.learn(total_timesteps=200_000, callback=reward_callback)
-model.save("her_sac_driving_class")
+model.learn(total_timesteps=3000000, callback=checkpoint_callback)
 
-env.close()
+# env.close()
 vec_env.close()

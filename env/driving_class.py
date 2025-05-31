@@ -99,8 +99,8 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "x_offset": 0, "y_offset": 0,
                 "road_segment_size": 80, "road_segment_gap": 15,
                 "road_extra_length": [20], "start_lane_index": 1,
-                "manual_control": True,
-                "real_time_rendering": True,
+                # "manual_control": True,
+                # "real_time_rendering": True,
 
             }
         )

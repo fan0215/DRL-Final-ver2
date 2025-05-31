@@ -137,13 +137,52 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         except KeyError:
             if self.vehicle: self.vehicle.goal = None
 
-    def compute_reward(self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict, p: float = 0.5) -> float:
-        if desired_goal is None: return 0.0
-        current_reward_weights = np.array(self.config["reward_weights"])
-        if len(current_reward_weights) != len(achieved_goal) or len(current_reward_weights) != len(desired_goal):
-            return -np.power(np.linalg.norm(achieved_goal - desired_goal), p)
-        weighted_abs_diff = np.dot(np.abs(achieved_goal - desired_goal), current_reward_weights)
-        return -np.power(weighted_abs_diff, p)
+    def compute_reward(self, achieved_goal: np.ndarray, desired_goal: np.ndarray, info: dict, p: float = 0.5) -> np.ndarray: # Changed return type
+        if desired_goal is None:
+            # This case should ideally not happen with HER providing goals.
+            # If it can, ensure it returns an array of appropriate size if achieved_goal is batched.
+            # For simplicity, assuming desired_goal is always present from HER.
+            # If achieved_goal is batched, this needs to return an array of zeros.
+            if achieved_goal.ndim > 1:
+                return np.zeros(achieved_goal.shape[0], dtype=np.float32)
+            return 0.0 # Or handle as an error/warning
+
+        # Ensure inputs are at least 1D, and then promote to 2D for consistent batch processing
+        achieved_goal_arr = np.atleast_1d(achieved_goal)
+        desired_goal_arr = np.atleast_1d(desired_goal)
+
+        is_batched_input = achieved_goal_arr.ndim > 1 and achieved_goal_arr.shape[0] > 1 # A more robust check for batch
+        if not is_batched_input and achieved_goal_arr.ndim == 1 : # Single transition, reshape to (1, goal_dim)
+            achieved_goal_arr = achieved_goal_arr.reshape(1, -1)
+            desired_goal_arr = desired_goal_arr.reshape(1, -1)
+        elif achieved_goal_arr.ndim == 0: # Scalar inputs, very unlikely but guard
+            achieved_goal_arr = achieved_goal_arr.reshape(1,1)
+            desired_goal_arr = desired_goal_arr.reshape(1,1)
+
+
+        batch_size, goal_dim = achieved_goal_arr.shape
+
+        current_reward_weights = np.array(self.config.get("reward_weights", [])) # Use .get for safety
+
+        diff = achieved_goal_arr - desired_goal_arr # Shape: (batch_size, goal_dim)
+
+        # Condition to use weights should be based on whether weights are valid for the goal_dim
+        if len(current_reward_weights) == goal_dim:
+            # Weighted calculation
+            # Element-wise multiplication then sum over goal_dim
+            # np.abs(diff) is (batch_size, goal_dim)
+            # current_reward_weights (reshaped to (1, goal_dim) for broadcasting)
+            weighted_abs_diff_sum = np.sum(np.abs(diff) * current_reward_weights.reshape(1, goal_dim), axis=1) # Result shape: (batch_size,)
+            rewards = -np.power(weighted_abs_diff_sum, p)
+        else:
+            # Unweighted calculation (using norm)
+            # np.linalg.norm needs axis=1 for batched input to get norm for each item in batch
+            distance = np.linalg.norm(diff, axis=1) # Result shape: (batch_size,)
+            rewards = -np.power(distance, p)
+        
+        if not is_batched_input and rewards.shape == (1,): # If original input was single, return scalar
+            return rewards[0]
+        return rewards # Return 1D array of shape (batch_size,)
 
     def _reward(self, action: np.ndarray) -> float: # Changed Action to np.ndarray
         if self.observation_type is None or self.vehicle is None: return 0.0

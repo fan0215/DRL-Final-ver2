@@ -99,6 +99,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "x_offset": 0, "y_offset": 0,
                 "road_segment_size": 80, "road_segment_gap": 15,
                 "road_extra_length": [20], "start_lane_index": 1,
+                "street_parking_width": 8.0,
                 # "manual_control": True,
                 # "real_time_rendering": True,
 
@@ -318,6 +319,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         x_offset = self.config["x_offset"]; y_offset = self.config["y_offset"]
         size = self.config["road_segment_size"]; gap = self.config["road_segment_gap"]
         extra_len_val = self.config["road_extra_length"][0] if self.config["road_extra_length"] else 10
+        street_parking_width = self.config["street_parking_width"]
         self._lane_ids = []
         net.add_lane("a","b", StraightLane(
                 [x_offset + width, y_offset + width * 2], [x_offset + width, y_offset + width * 2 + size],
@@ -338,9 +340,9 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 width=width * 2, line_types=line_type_defs[0]))
         self._lane_ids.append(("b", "c", 2))
         net.add_lane("b","c",StraightLane(
-                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 2 + size],
-                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val, y_offset + width * 2 + size],
-                width=width * 4, line_types=line_type_defs[0]))
+                [x_offset + width * 2 + gap + width * 2 + gap, y_offset + width * 2 + size + width * 2 - (width * 2 + street_parking_width) / 2],
+                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val, y_offset + width * 2 + size + width * 2 - (width * 2 + street_parking_width) / 2],
+                width=width * 2 + street_parking_width, line_types=line_type_defs[0]))
         self._lane_ids.append(("b", "c", 3))
         net.add_lane("b","c",StraightLane(
                 [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val, y_offset + width * 3 + size],
@@ -362,7 +364,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         self._lane_ids.append(("e", "f", 0))
         net.add_lane("f","g",StraightLane(
                 [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val / 2, y_offset + width * 2 + size],
-                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val / 2, y_offset + width * 2 + size - width * 2],
+                [x_offset + width * 2 + gap + width * 2 + gap + extra_len_val / 2, y_offset + width * 2 + size - street_parking_width],
                 width=extra_len_val, line_types=line_type_defs[0]))
         self._lane_ids.append(("f", "g", 0))
         net.add_lane("g","h",StraightLane(
@@ -389,6 +391,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         gap = self.config["road_segment_gap"]
         road_width = 2 * self.config["lane_width"]
         length = self.config["road_extra_length"][0]
+        street_parking_width = self.config["street_parking_width"]
 
         def create_wall(start, end):
             point = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2]
@@ -415,9 +418,9 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         create_wall([road_width + gap, size + road_width - length], [road_width * 2 + gap, size + road_width - length])
         create_wall([road_width * 2 + gap, size + road_width - length], [road_width * 2 + gap, size + road_width])
         create_wall([road_width * 2 + gap, size + road_width], [road_width * 2 + gap * 2, size + road_width])
-        create_wall([road_width * 2 + gap * 2, size + road_width], [road_width * 2 + gap * 2, size])
-        create_wall([road_width * 2 + gap * 2, size], [road_width * 2 + gap * 2 + length, size])
-        create_wall([road_width * 2 + gap * 2 + length, size], [road_width * 2 + gap * 2 + length, road_width + size])
+        create_wall([road_width * 2 + gap * 2, size + road_width], [road_width * 2 + gap * 2, size + road_width - street_parking_width])
+        create_wall([road_width * 2 + gap * 2, size + road_width - street_parking_width], [road_width * 2 + gap * 2 + length, size + road_width - street_parking_width])
+        create_wall([road_width * 2 + gap * 2 + length, size + road_width - street_parking_width], [road_width * 2 + gap * 2 + length, road_width + size])
         create_wall([road_width * 2 + gap * 2 + length, road_width + size], [size + road_width, size + road_width])
 
     def _make_vehicles(self) -> None:

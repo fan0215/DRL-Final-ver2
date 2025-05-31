@@ -58,7 +58,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                             "type": "LidarObservation",
                             "angle_range": [-np.pi, np.pi], # Full 360-degree Lidar
                             "cells": 30,                     # Number of Lidar beams
-                            "max_distance": 30.0,            # Max Lidar distance (meters)
+                            "max_distance": 50.0,            # Max Lidar distance (meters)
                             "normalize": True,               # Normalize Lidar distances to [0, 1]
                             "see_behind": True,              # Allow Lidar to see behind
                         },
@@ -83,7 +83,12 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "lane_centering_shaping_reward": 0.005,
                 "lane_centering_cost_factor": 4,
                 "controlled_vehicles": 1, "other_vehicles": 0,
-                "goal_sequence": [("b", "c", 2), ("e", "f", 0), ("f", "g", 0) ],
+                "goal_sequence": [
+                    {"lane_tuple": ("b", "c", 2), "target_heading_rad": None},          # Goal 1
+                    {"lane_tuple": ("e", "f", 0), "target_heading_rad": np.pi / 2},       # Goal 2 (Reversing bay, face West)
+                    {"lane_tuple": ("b", "c", 2), "target_heading_rad": None},          # Goal 3
+                    {"lane_tuple": ("f", "g", 0), "target_heading_rad": 0}    # Goal 4 (Parking, face South)
+                ],
                 "intermediate_goal_reward": 75.0,
                 "final_goal_completion_reward": 150.0,
                 "goal_longitudinal_offset": 0.5, "goal_heading_noise_std": np.deg2rad(3),
@@ -92,10 +97,10 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "screen_width": 1200, "screen_height": 900, "centering_position": [0.3, 0.6], "scaling": 3.5,
                 "lane_width": 6.0, "show_trajectories": False, "offroad_terminal": False,
                 "x_offset": 0, "y_offset": 0,
-                "road_segment_size": 80, "road_segment_gap": 8,
+                "road_segment_size": 80, "road_segment_gap": 15,
                 "road_extra_length": [20], "start_lane_index": 1,
-                # "manual_control": True,
-                # "real_time_rendering": True,
+                "manual_control": True,
+                "real_time_rendering": True,
 
             }
         )
@@ -116,14 +121,20 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
 
         if self.current_goal_index >= len(self.goal_sequence): return
 
-        current_goal_config_tuple = self.goal_sequence[self.current_goal_index]
+        current_goal_config = self.goal_sequence[self.current_goal_index]
+        current_goal_config_tuple = current_goal_config["lane_tuple"]
+        target_heading_override_rad = current_goal_config.get("target_heading_rad")
+
         if current_goal_config_tuple not in self._lane_ids: return
 
         try:
             goal_lane_object = self.road.network.get_lane(current_goal_config_tuple)
             long_offset_factor = np.clip(self.config["goal_longitudinal_offset"], 0.05, 0.95)
             goal_pos = goal_lane_object.position(goal_lane_object.length * long_offset_factor, 0)
-            goal_head = goal_lane_object.heading_at(goal_lane_object.length * long_offset_factor)
+            if target_heading_override_rad is not None:
+                goal_head = float(target_heading_override_rad)
+            else:
+                goal_head = goal_lane_object.heading_at(goal_lane_object.length * long_offset_factor)
             goal_pos[0] += self.np_random.normal(0, self.config["goal_position_noise_std"])
             goal_pos[1] += self.np_random.normal(0, self.config["goal_position_noise_std"])
             goal_head += self.np_random.normal(0, self.config["goal_heading_noise_std"])

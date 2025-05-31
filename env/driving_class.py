@@ -76,24 +76,24 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 },
                 "simulation_frequency": 15, "policy_frequency": 5,
                 "duration": 600,
-                "reward_weights": np.array([1.0, 1.0, 0.3, 0.3]),
+                "reward_weights": np.array([1.0, 1.0, 0.02, 0.02, 0, 0]),
                 "collision_reward": -150.0,
                 "action_penalty_weight": -0.02,
                 "on_road_shaping_reward": 0.005,
                 "lane_centering_shaping_reward": 0.005,
                 "lane_centering_cost_factor": 4,
                 "controlled_vehicles": 1, "other_vehicles": 0,
-                "goal_sequence": [("e", "f", 0), ("f", "g", 0) ],
+                "goal_sequence": [("b", "c", 2), ("e", "f", 0), ("f", "g", 0) ],
                 "intermediate_goal_reward": 75.0,
                 "final_goal_completion_reward": 150.0,
                 "goal_longitudinal_offset": 0.5, "goal_heading_noise_std": np.deg2rad(3),
                 "goal_position_noise_std": 0.1, "success_distance_threshold": 0.03,
                 "success_heading_threshold_rad": np.deg2rad(15),
                 "screen_width": 1200, "screen_height": 900, "centering_position": [0.3, 0.6], "scaling": 3.5,
-                "lane_width": 4.0, "show_trajectories": False, "offroad_terminal": True,
+                "lane_width": 6.0, "show_trajectories": False, "offroad_terminal": True,
                 "x_offset": 0, "y_offset": 0,
                 "road_segment_size": 80, "road_segment_gap": 8,
-                "road_extra_length": [10], "start_lane_index": 1,
+                "road_extra_length": [20], "start_lane_index": 1,
                 # "manual_control": True,
                 # "real_time_rendering": True,
 
@@ -160,6 +160,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
             self.last_step_goal_met = self._is_success(achieved_g, desired_g_this_step)
             info_for_compute = {"is_crashed": self.vehicle.crashed, "is_success": self.last_step_goal_met}
             total_reward += self.compute_reward(achieved_g, desired_g_this_step, info_for_compute)
+            # print(f"Distance reward: {total_reward}")
 
             if self.last_step_goal_met:
                 is_this_the_final_goal_in_sequence = (self.current_goal_index == len(self.goal_sequence) - 1)
@@ -173,17 +174,18 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
         if self.vehicle.crashed:
             total_reward += self.config["collision_reward"]
         total_reward += self.config["action_penalty_weight"] * np.linalg.norm(action)
-        on_road_value = float(self.vehicle.on_road)
-        total_reward += self.config["on_road_shaping_reward"] * on_road_value
+        # print(f"total reward: {total_reward}")
+        # on_road_value = float(self.vehicle.on_road)
+        # total_reward += self.config["on_road_shaping_reward"] * on_road_value
         
-        lane_centering_value = 0.0
-        if self.vehicle.on_road and self.vehicle.lane_index and self.road:
-            try:
-                current_lane = self.road.network.get_lane(self.vehicle.lane_index)
-                _, lateral_offset = current_lane.local_coordinates(self.vehicle.position)
-                lane_centering_value = 1 / (1 + self.config["lane_centering_cost_factor"] * lateral_offset**2)
-            except (KeyError, AttributeError): pass
-        total_reward += self.config["lane_centering_shaping_reward"] * lane_centering_value
+        # lane_centering_value = 0.0
+        # if self.vehicle.on_road and self.vehicle.lane_index and self.road:
+        #     try:
+        #         current_lane = self.road.network.get_lane(self.vehicle.lane_index)
+        #         _, lateral_offset = current_lane.local_coordinates(self.vehicle.position)
+        #         lane_centering_value = 1 / (1 + self.config["lane_centering_cost_factor"] * lateral_offset**2)
+        #     except (KeyError, AttributeError): pass
+        # total_reward += self.config["lane_centering_shaping_reward"] * lane_centering_value
         
         return float(total_reward)
 
@@ -437,4 +439,3 @@ if __name__ == "__main__":
         print(f"Ep {episode + 1} end. TotRew: {total_reward_ep:.2f}, Steps: {step_count}")
     env.close()
     print("\n--- Test Finished ---")
-

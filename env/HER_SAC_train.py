@@ -2,20 +2,41 @@ import gymnasium as gym
 from stable_baselines3 import SAC, HerReplayBuffer
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
+from gymnasium import spaces
 import os
 
-# ====== 1. Import your custom environment =====
 import driving_class  # 這行要根據你的環境模組來寫
 
-# ====== 2. 設定 TensorBoard log 目錄 ======
 log_dir = "./her_sac_tensorboard/"
 os.makedirs(log_dir, exist_ok=True)
+class TupleToDictObsWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        lidar_space = env.observation_space.spaces[0]
+        kgo_space = env.observation_space.spaces[1]
+        self.observation_space = spaces.Dict({
+            "lidar": lidar_space,
+            "observation": kgo_space['observation'],
+            "achieved_goal": kgo_space['achieved_goal'],
+            "desired_goal": kgo_space['desired_goal'],
+        })
 
-# ====== 3. 建立 Gymnasium 環境並包裝 VecEnv ======
-env = gym.make("DrivingClass-v0")
-vec_env = DummyVecEnv([lambda: gym.make("DrivingClass-v0")])
+    def observation(self, obs):
+        lidar, kgo = obs
+        return {
+            "lidar": lidar,
+            "observation": kgo["observation"],
+            "achieved_goal": kgo["achieved_goal"],
+            "desired_goal": kgo["desired_goal"],
+        }
 
-# ====== 4. 自訂 Callback log 每集 reward 到 TensorBoard ======
+def make_env():
+    env = gym.make("DrivingClass-v0", render_mode="human")
+    env = TupleToDictObsWrapper(env)
+    return env
+
+vec_env = DummyVecEnv([make_env])
+
 class RewardLoggerCallback(BaseCallback):
     def __init__(self, verbose=0):
         super().__init__(verbose)
@@ -33,7 +54,6 @@ class RewardLoggerCallback(BaseCallback):
 
 reward_callback = RewardLoggerCallback()
 
-# ====== 5. 建立 SAC + HER 模型 ======
 model = SAC(
     policy="MultiInputPolicy",            
     env=vec_env,
@@ -48,10 +68,8 @@ model = SAC(
     learning_rate=3e-4,    
 )
 
-# ====== 6. 訓練模型 ======
 model.learn(total_timesteps=200_000, callback=reward_callback)
 model.save("her_sac_driving_class")
 
-# ====== 7. 關閉環境 ======
 env.close()
 vec_env.close()

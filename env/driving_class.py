@@ -90,7 +90,7 @@ class DrivingClassEnv(AbstractEnv, GoalEnv):
                 "goal_position_noise_std": 0.1, "success_distance_threshold": 0.03,
                 "success_heading_threshold_rad": np.deg2rad(15),
                 "screen_width": 1200, "screen_height": 900, "centering_position": [0.3, 0.6], "scaling": 3.5,
-                "lane_width": 6.0, "show_trajectories": False, "offroad_terminal": True,
+                "lane_width": 6.0, "show_trajectories": False, "offroad_terminal": False,
                 "x_offset": 0, "y_offset": 0,
                 "road_segment_size": 80, "road_segment_gap": 8,
                 "road_extra_length": [20], "start_lane_index": 1,

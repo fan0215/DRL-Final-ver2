@@ -27,28 +27,14 @@ class TupleToDictObsWrapper(gym.ObservationWrapper):
         }
 
 
-# env = gym.make("DrivingClass-v0", render_mode="human")
-# env = TupleToDictObsWrapper(env)
-# model = PPO.load("ppo_new/ppo_model_2000000_steps")
-# obs, info = env.reset()
-
-def make_env():
-    env = gym.make("DrivingClass-v0")
-    env = TupleToDictObsWrapper(env)
-    return env
-
-env = DummyVecEnv([make_env])
-model = SAC.load("sac_new/sac_model_2500000_steps", env=env)
-obs = env.reset()
-
-show_env = TupleToDictObsWrapper(gym.make("DrivingClass-v0", render_mode="human"))
-show_env.reset()
+env = gym.make("DrivingClass-v0", render_mode="human")
+env = TupleToDictObsWrapper(env)
+model = PPO.load("ppo/ppo_model_2700000_steps")
+obs, info = env.reset()
 
 terminated, truncated = False, False
 while not (terminated or truncated):
     action, _states = model.predict(obs, deterministic=True)
-    # obs, reward, terminated, truncated, info = env.step(action)
-    obs, reward, terminated, info = env.step(action)
-    show_env.step(action[0])
-    show_env.render()
+    obs, reward, terminated, truncated, info = env.step(action)
+    env.render()
 env.close()
